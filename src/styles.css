@@ -122,7 +122,11 @@ button {
 body.resizing { cursor: col-resize; user-select: none; }
 
 .col-head {
-  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 4px 12px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -130,6 +134,15 @@ body.resizing { cursor: col-resize; user-select: none; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+.suffix-filter { position: relative; }
+.suffix-btn {
+  font-size: 11px;
+  color: var(--fg-dim);
+  padding: 3px 8px;
+  border-radius: 5px;
+}
+.suffix-btn:hover { background: var(--hover); color: var(--fg); }
+.pop.suffix-pop { top: 30px; left: 8px; right: auto; min-width: 220px; }
 .col-body { flex: 1; overflow: auto; min-height: 0; }
 .col-foot {
   padding: 5px 12px;
@@ -261,7 +274,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   overflow: hidden;
 }
 .pop.bell-pop { right: 44px; }
-.pop.filter-pop { right: 90px; }
 .pop-head {
   display: flex; justify-content: space-between; align-items: center;
   padding: 9px 12px; border-bottom: 1px solid var(--border);

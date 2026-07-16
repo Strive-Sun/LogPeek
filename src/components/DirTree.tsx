@@ -2,13 +2,18 @@ import { useState } from 'react';
 import { api } from '../api';
 import type { ArchiveEntry, TreeNode } from '../api';
 import { fmtSize } from '../util/format';
+import { SuffixFilter } from './SuffixFilter';
 
 interface Props {
   nodes: TreeNode[];
   activeKey: string | null;
   selectedArchive: string | null;
   width?: number;
+  filter: string[];
+  showAll: boolean;
   passesFilter: (n: { name: string; kind: string; isLog?: boolean }) => boolean;
+  onFilterChange: (f: string[]) => void;
+  onShowAllChange: (v: boolean) => void;
   onSelectArchive: (name: string, unreadId?: string) => void;
   onOpenFile: (name: string, unreadId?: string) => void;
   onAddDir: () => void;
@@ -17,7 +22,15 @@ interface Props {
 export function DirTree(props: Props) {
   return (
     <div className="col col-tree" style={props.width ? { width: props.width } : undefined}>
-      <div className="col-head">监控目录</div>
+      <div className="col-head">
+        <span>监控目录</span>
+        <SuffixFilter
+          filter={props.filter}
+          showAll={props.showAll}
+          onFilterChange={props.onFilterChange}
+          onShowAllChange={props.onShowAllChange}
+        />
+      </div>
       <div className="col-body">
         {props.nodes.map((n) => (
           <TreeItem key={n.id} node={n} depth={0} {...props} />

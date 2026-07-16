@@ -135,16 +135,6 @@ export function App() {
           void key;
         }}
         onMarkAll={markAllRead}
-        filter={filter}
-        showAll={showAll}
-        onFilterChange={(f) => {
-          setFilter(f);
-          void api.setFilter(f, showAll);
-        }}
-        onShowAllChange={(v) => {
-          setShowAll(v);
-          void api.setFilter(filter, v);
-        }}
       />
 
       <div className="cols">
@@ -153,7 +143,17 @@ export function App() {
           activeKey={activeKey}
           selectedArchive={selectedArchive}
           width={treeWidth}
+          filter={filter}
+          showAll={showAll}
           passesFilter={passesFilter}
+          onFilterChange={(f) => {
+            setFilter(f);
+            void api.setFilter(f, showAll);
+          }}
+          onShowAllChange={(v) => {
+            setShowAll(v);
+            void api.setFilter(filter, v);
+          }}
           onAddDir={addDir}
           onSelectArchive={(name, id) => {
             setSelectedArchive(name);

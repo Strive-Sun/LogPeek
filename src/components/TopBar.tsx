@@ -8,21 +8,13 @@ interface Props {
   newItems: NewLogItem[];
   onOpenItem: (item: NewLogItem) => void;
   onMarkAll: () => void;
-  filter: string[];
-  showAll: boolean;
-  onFilterChange: (f: string[]) => void;
-  onShowAllChange: (v: boolean) => void;
 }
-
-const SUFFIX_CHOICES = ['.log', '.txt', '.out', '.json'];
 
 export function TopBar(props: Props) {
   const { count, newItems } = props;
   const [bellOpen, setBellOpen] = useState(false);
-  const [filterOpen, setFilterOpen] = useState(false);
   const [ring, setRing] = useState(false);
   const prevCount = useRef(count);
-  const [custom, setCustom] = useState('');
 
   // 计数增加时铃铛抖动
   useEffect(() => {
@@ -34,29 +26,12 @@ export function TopBar(props: Props) {
     prevCount.current = count;
   }, [count]);
 
-  const toggleSuffix = (s: string) => {
-    props.onFilterChange(
-      props.filter.includes(s) ? props.filter.filter((x) => x !== s) : [...props.filter, s],
-    );
-  };
-
-  const addCustom = () => {
-    let s = custom.trim();
-    if (!s) return;
-    if (!s.startsWith('.')) s = '.' + s;
-    if (!props.filter.includes(s)) props.onFilterChange([...props.filter, s]);
-    setCustom('');
-  };
-
   return (
     <div className="topbar">
       <span className="brand">LogPeek</span>
       <span className="search" title="搜索将在 M4 提供">🔍 搜索</span>
       <span className="spacer" />
 
-      <button className="icon-btn" onClick={() => setFilterOpen((v) => !v)} title="后缀筛选">
-        后缀 ▾
-      </button>
       <button className="icon-btn" onClick={props.onToggleTheme} title="切换主题">
         {props.theme === 'dark' ? '🌙' : '☀️'}
       </button>
@@ -65,46 +40,6 @@ export function TopBar(props: Props) {
         {count > 0 && <span className="badge">{count > 99 ? '99+' : count}</span>}
       </button>
       <button className="icon-btn" title="设置">⚙️</button>
-
-      {filterOpen && (
-        <>
-          <div className="backdrop" onClick={() => setFilterOpen(false)} />
-          <div className="pop filter-pop">
-            <div className="pop-head">后缀筛选</div>
-            {SUFFIX_CHOICES.map((s) => (
-              <div className="filter-row" key={s}>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={props.filter.includes(s)}
-                    onChange={() => toggleSuffix(s)}
-                  />
-                  {s}
-                </label>
-              </div>
-            ))}
-            <div className="filter-row">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={props.showAll}
-                  onChange={(e) => props.onShowAllChange(e.target.checked)}
-                />
-                显示全部(含非日志)
-              </label>
-            </div>
-            <div className="filter-custom">
-              <input
-                placeholder=".trace"
-                value={custom}
-                onChange={(e) => setCustom(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addCustom()}
-              />
-              <button className="icon-btn" onClick={addCustom}>+</button>
-            </div>
-          </div>
-        </>
-      )}
 
       {bellOpen && (
         <>
