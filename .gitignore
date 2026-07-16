@@ -1,0 +1,27 @@
+# Rust / Tauri
+/src-tauri/target/
+/src-tauri/gen/
+**/*.rs.bk
+# 注:应用类项目提交 Cargo.lock 以保证 CI 可复现构建(库项目才忽略)
+
+# Node / 前端
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# 日志与临时
+*.log
+.tmp/
+
+# 本地测试数据
+testlogs/

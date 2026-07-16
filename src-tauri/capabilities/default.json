@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "LogPeek 默认权限:核心命令 + 文件夹选择对话框",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}

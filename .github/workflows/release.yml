@@ -1,0 +1,78 @@
+name: Release
+
+# 推送形如 v0.1.0 的 tag 时触发:构建各平台安装包并发布到 GitHub Release
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 允许 workflow 创建 Release、上传资产
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布(${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ''
+          - os: macos-latest
+            args: '--target universal-apple-darwin'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # 显式指定公共 registry:防止 package-lock.json 中残留的内网源地址
+          # (如公司 Nexus)导致 runner 在公网无法解析而安装失败
+          registry-url: https://registry.npmjs.org
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS 通用二进制需要两个架构目标
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: 缓存 Cargo 构建
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        # 用 npm install 而非 npm ci:后者存在跳过平台专属 optionalDependencies 的
+        # 已知 bug(npm/cli#4828),会导致 @tauri-apps/cli 的原生二进制缺失
+        run: npm install
+
+      - name: 构建并发布安装包
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'LogPeek ${{ github.ref_name }}'
+          releaseBody: '详见下方各平台安装包。安装包体积约 2–3MB(复用系统 WebView)。'
+          # 自动发布(非草稿):Release 跑完即公开,点进 tag/Releases 页面可直接下载安装包
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      # 兜底:无论上一步创建 Release 是否成功,都把安装包作为构建产物上传,
+      # 便于在 Release 发布异常时仍能取到安装包
+      - name: 上传安装包为构建产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            src-tauri/target/release/bundle/nsis/*-setup.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/**/bundle/dmg/*.dmg
+            src-tauri/target/**/bundle/macos/*.app.tar.gz

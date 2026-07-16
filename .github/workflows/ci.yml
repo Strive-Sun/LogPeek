@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支/PR 的新提交取消仍在跑的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: 前端检查(类型 + 构建)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # 显式指定公共 registry:防止 package-lock.json 中残留的内网源地址
+          # (如公司 Nexus)导致 runner 在公网无法解析而安装失败
+          registry-url: https://registry.npmjs.org
+
+      - name: 安装依赖
+        # 用 npm install 而非 npm ci:规避 optionalDependencies 安装的已知 bug(npm/cli#4828)
+        run: npm install
+
+      - name: TypeScript 类型检查
+        run: npx tsc --noEmit
+
+      - name: 前端构建
+        run: npm run build
+
+  rust:
+    name: Rust 检查(${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 缓存 Cargo 构建
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 格式检查(fmt)
+        run: cargo fmt --all --check
+        working-directory: src-tauri
+
+      - name: 静态检查(clippy)
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      - name: 编译检查(check)
+        run: cargo check --all-targets
+        working-directory: src-tauri
+
+      - name: 单元测试(test)
+        run: cargo test
+        working-directory: src-tauri
