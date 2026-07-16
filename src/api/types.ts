@@ -34,6 +34,8 @@ export interface TreeNode {
   size?: number;
   /** 是否日志文件(archive 节点恒为 true;file 视扩展名/采样) */
   isLog?: boolean;
+  /** 磁盘绝对路径(用于重命名/删除等文件操作) */
+  path?: string;
   /** 来源监控目录路径 */
   watchDir?: string;
   /** 是否为未读的新到达项 */

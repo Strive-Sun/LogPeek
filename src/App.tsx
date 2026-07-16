@@ -57,6 +57,13 @@ export function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  // 禁用 WebView 默认右键菜单(刷新/打印/检查等,对本应用无意义)
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener('contextmenu', onCtx);
+    return () => document.removeEventListener('contextmenu', onCtx);
+  }, []);
+
   const refreshTree = useCallback(() => {
     api.listWatchDirs().then(setTree);
   }, []);
@@ -118,6 +125,39 @@ export function App() {
     });
   }, []);
 
+  const renameFile = useCallback(
+    async (path: string, newName: string) => {
+      try {
+        await api.renameFile(path, newName);
+        refreshTree();
+      } catch (e) {
+        alert('重命名失败:' + String(e));
+      }
+    },
+    [refreshTree],
+  );
+
+  const deleteFile = useCallback(
+    async (node: TreeNode) => {
+      const target = node.path ?? node.id;
+      if (!window.confirm(`确定删除「${node.name}」吗?\n文件将被移到系统回收站。`)) return;
+      try {
+        await api.deleteFile(target);
+        // 若当前查看的正是被删文件(或被删压缩包内的条目),清空视图
+        if (activeKey === node.name || activeKey?.startsWith(node.name + '::')) {
+          setActiveKey(null);
+          setSession(null);
+          setSelectedArchive(null);
+        }
+        markSeen(node.id);
+        refreshTree();
+      } catch (e) {
+        alert('删除失败:' + String(e));
+      }
+    },
+    [activeKey, markSeen, refreshTree],
+  );
+
   const hasDirs = tree.length > 0;
 
   return (
@@ -163,6 +203,8 @@ export function App() {
             if (id) markSeen(id);
           }}
           onOpenFile={(name, id) => openEntry(name, id)}
+          onRename={renameFile}
+          onDelete={deleteFile}
         />
         <div className="col-resizer" onMouseDown={startResize} />
 

@@ -228,6 +228,13 @@ export const mockApi = {
 
   async removeWatchDir(_dirPath: string): Promise<void> {},
 
+  async renameFile(path: string, newName: string): Promise<string> {
+    const parent = path.replace(/[/\\][^/\\]*$/, '');
+    return `${parent}/${newName}`;
+  },
+
+  async deleteFile(_path: string): Promise<void> {},
+
   async setFilter(_suffixes: string[], _showAll: boolean): Promise<void> {},
 
   subscribeNewLogs(_onDetect: (item: NewLogItem) => void): () => void {

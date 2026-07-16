@@ -97,6 +97,40 @@ fn set_filter(state: State<AppState>, suffixes: Vec<String>, show_all: bool) {
     state.watch.set_filter(suffixes, show_all);
 }
 
+/// 重命名文件:仅改文件名,保持在同一目录内;拒绝路径穿越与覆盖已存在文件。
+#[tauri::command]
+fn rename_file(path: String, new_name: String) -> Result<String, String> {
+    let src = PathBuf::from(&path);
+    if !src.is_file() {
+        return Err("文件不存在".into());
+    }
+    // 只允许纯文件名,禁止包含路径分隔符,避免移动到其他目录
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err("文件名不能为空".into());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("文件名不能包含路径分隔符".into());
+    }
+    let parent = src.parent().ok_or("无法确定父目录")?;
+    let dst = parent.join(trimmed);
+    if dst.exists() {
+        return Err(format!("已存在同名文件: {trimmed}"));
+    }
+    std::fs::rename(&src, &dst).map_err(|e| e.to_string())?;
+    Ok(dst.to_string_lossy().into_owned())
+}
+
+/// 删除文件:移动到系统回收站(可恢复),而非永久删除。
+#[tauri::command]
+fn delete_file(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err("文件不存在".into());
+    }
+    trash::delete(&p).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn list_archive_entries(path: String) -> Result<Vec<ArchiveEntry>, String> {
     let mut reader = open_archive(&PathBuf::from(&path)).map_err(|e| e.to_string())?;
@@ -202,6 +236,8 @@ pub fn run() {
             add_watch_dir,
             remove_watch_dir,
             set_filter,
+            rename_file,
+            delete_file,
             list_archive_entries,
             open_log_session,
             read_lines,

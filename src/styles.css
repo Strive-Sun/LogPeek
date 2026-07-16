@@ -312,3 +312,33 @@ body.resizing { cursor: col-resize; user-select: none; }
   border-radius: 5px; color: var(--fg); padding: 4px 8px; font-size: 12px;
 }
 .backdrop { position: fixed; inset: 0; z-index: 10; }
+
+/* 右键上下文菜单 */
+.ctx-backdrop { position: fixed; inset: 0; z-index: 40; }
+.ctx-menu {
+  position: fixed;
+  z-index: 41;
+  min-width: 140px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.35);
+  padding: 4px;
+  overflow: hidden;
+}
+.ctx-item {
+  padding: 7px 12px;
+  font-size: 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-item:hover { background: var(--hover); }
+.ctx-item.danger { color: var(--error); }
+.ctx-item.danger:hover { background: var(--error); color: #fff; }
+.rename-input {
+  flex: 1; min-width: 0;
+  background: var(--bg); border: 1px solid var(--accent);
+  border-radius: 4px; color: var(--fg);
+  padding: 1px 5px; font-size: 12px; font-family: inherit;
+}

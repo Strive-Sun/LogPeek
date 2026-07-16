@@ -25,6 +25,7 @@ encoding_rs = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 anyhow = "1"
 thiserror = "1"
+trash = "5"
 
 [features]
 # 由 tauri CLI 在构建时按需启用

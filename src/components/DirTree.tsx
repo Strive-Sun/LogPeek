@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { createContext, useContext, useState } from 'react';
 import { api } from '../api';
 import type { ArchiveEntry, TreeNode } from '../api';
 import { fmtSize } from '../util/format';
 import { SuffixFilter } from './SuffixFilter';
+import { ContextMenu } from './ContextMenu';
 
 interface Props {
   nodes: TreeNode[];
@@ -18,7 +19,21 @@ interface Props {
   onSelectArchive: (name: string, unreadId?: string) => void;
   onOpenFile: (name: string, unreadId?: string) => void;
   onAddDir: () => void;
+  /** 重命名磁盘文件(同目录);成功后应触发刷新 */
+  onRename: (path: string, newName: string) => Promise<void>;
+  /** 删除文件(移入回收站);由上层弹确认并刷新 */
+  onDelete: (node: TreeNode) => void;
 }
+
+// 让深层 TreeItem 能触发右键菜单与重命名,而无需逐层透传
+interface TreeCtx {
+  openMenu: (e: React.MouseEvent, node: TreeNode) => void;
+  renamingId: string | null;
+  startRename: (node: TreeNode) => void;
+  commitRename: (node: TreeNode, name: string) => void;
+  cancelRename: () => void;
+}
+const TreeContext = createContext<TreeCtx | null>(null);
 
 /** 节点是否为未读的新到达项(id 即文件路径) */
 function isUnread(node: TreeNode, unreadIds: Set<string>): boolean {
@@ -33,6 +48,25 @@ function hasUnreadDescendant(node: TreeNode, unreadIds: Set<string>): boolean {
 }
 
 export function DirTree(props: Props) {
+  const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  const ctx: TreeCtx = {
+    openMenu: (e, node) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setMenu({ x: e.clientX, y: e.clientY, node });
+    },
+    renamingId,
+    startRename: (node) => setRenamingId(node.id),
+    commitRename: (node, name) => {
+      setRenamingId(null);
+      const trimmed = name.trim();
+      if (trimmed && trimmed !== node.name) void props.onRename(node.path ?? node.id, trimmed);
+    },
+    cancelRename: () => setRenamingId(null),
+  };
+
   return (
     <div className="col col-tree" style={props.width ? { width: props.width } : undefined}>
       <div className="col-head">
@@ -44,20 +78,34 @@ export function DirTree(props: Props) {
           onShowAllChange={props.onShowAllChange}
         />
       </div>
-      <div className="col-body">
-        {props.nodes.map((n) => (
-          <TreeItem key={n.id} node={n} depth={0} {...props} />
-        ))}
-      </div>
+      <TreeContext.Provider value={ctx}>
+        <div className="col-body">
+          {props.nodes.map((n) => (
+            <TreeItem key={n.id} node={n} depth={0} {...props} />
+          ))}
+        </div>
+      </TreeContext.Provider>
       <button className="add-dir-btn" onClick={props.onAddDir}>
         + 添加监控目录
       </button>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            { label: '重命名', onClick: () => ctx.startRename(menu.node) },
+            { label: '删除', danger: true, onClick: () => props.onDelete(menu.node) },
+          ]}
+        />
+      )}
     </div>
   );
 }
 
 function TreeItem(props: Props & { node: TreeNode; depth: number }) {
   const { node, depth } = props;
+  const tree = useContext(TreeContext);
   const [open, setOpen] = useState(node.kind === 'dir');
   // 压缩包展开时惰性拉取的子条目
   const [entries, setEntries] = useState<ArchiveEntry[] | null>(null);
@@ -78,6 +126,25 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
   };
 
   const unread = isUnread(node, props.unreadIds);
+  const renaming = tree?.renamingId === node.id;
+
+  // 重命名中显示内联输入框,否则显示文件名
+  const renderLabel = (extraClass = '') =>
+    renaming ? (
+      <input
+        className="rename-input"
+        autoFocus
+        defaultValue={node.name}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') tree?.commitRename(node, (e.target as HTMLInputElement).value);
+          else if (e.key === 'Escape') tree?.cancelRename();
+        }}
+        onBlur={(e) => tree?.commitRename(node, e.target.value)}
+      />
+    ) : (
+      <span className={'label' + extraClass}>{node.name}</span>
+    );
 
   if (node.kind === 'dir') {
     const dirHasNew = hasUnreadDescendant(node, props.unreadIds);
@@ -109,11 +176,12 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
           }
           style={pad}
           onClick={toggleArchive}
+          onContextMenu={(e) => tree?.openMenu(e, node)}
         >
           <span className="twisty">{open ? '▾' : '▸'}</span>
           <span className="ico">📦</span>
-          <span className="label">{node.name}</span>
-          {unread && <span className="dot-unread" />}
+          {renderLabel()}
+          {unread && !renaming && <span className="dot-unread" />}
         </div>
         {open && loading && (
           <div className="tree-node" style={{ paddingLeft: 10 + (depth + 1) * 14, color: 'var(--fg-dim)' }}>
@@ -154,11 +222,12 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
       }
       style={pad}
       onClick={() => props.onOpenFile(node.name, unread ? node.id : undefined)}
+      onContextMenu={(e) => tree?.openMenu(e, node)}
     >
       <span className="twisty" />
       <span className="ico">{node.isLog === false ? '⬡' : '📄'}</span>
-      <span className={'label' + (node.isLog === false ? ' notlog' : '')}>{node.name}</span>
-      {unread && <span className="dot-unread" />}
+      {renderLabel(node.isLog === false ? ' notlog' : '')}
+      {unread && !renaming && <span className="dot-unread" />}
     </div>
   );
 }

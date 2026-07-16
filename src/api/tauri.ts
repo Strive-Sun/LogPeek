@@ -45,12 +45,14 @@ export const tauriApi = {
       id: d.id,
       name: d.name,
       kind: 'dir' as const,
+      path: d.path,
       children: d.children.map((c) => {
         pathByName.set(c.name, c.path);
         return {
           id: c.id,
           name: c.name,
           kind: c.kind,
+          path: c.path,
           size: c.size,
           isLog: c.isLog,
           watchDir: d.name,
@@ -116,6 +118,16 @@ export const tauriApi = {
 
   async removeWatchDir(dirPath: string): Promise<void> {
     await invoke('remove_watch_dir', { path: dirPath });
+  },
+
+  /** 重命名磁盘文件(同目录内);返回新路径 */
+  async renameFile(path: string, newName: string): Promise<string> {
+    return invoke<string>('rename_file', { path, newName });
+  },
+
+  /** 删除文件到系统回收站 */
+  async deleteFile(path: string): Promise<void> {
+    await invoke('delete_file', { path });
   },
 
   async setFilter(suffixes: string[], showAll: boolean): Promise<void> {
