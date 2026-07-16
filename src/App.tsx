@@ -7,7 +7,7 @@ import { LogContent } from './components/LogContent';
 import { EmptyState } from './components/EmptyState';
 
 export function App() {
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [theme, setTheme] = useState<'dark' | 'light'>('light');
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [newItems, setNewItems] = useState<NewLogItem[]>([]);
   const [count, setCount] = useState(0);
