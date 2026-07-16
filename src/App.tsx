@@ -3,7 +3,6 @@ import { api } from './api';
 import type { NewLogItem, OpenSessionResult, TreeNode } from './api';
 import { TopBar } from './components/TopBar';
 import { DirTree } from './components/DirTree';
-import { EntryList } from './components/EntryList';
 import { LogContent } from './components/LogContent';
 import { EmptyState } from './components/EmptyState';
 
@@ -14,7 +13,7 @@ export function App() {
   const [count, setCount] = useState(0);
   const seen = useRef<Set<string>>(new Set());
 
-  // 当前选中的压缩包(用于中栏)与当前查看的条目 key
+  // 当前选中的压缩包(用于左侧树高亮)与当前查看的条目 key
   const [selectedArchive, setSelectedArchive] = useState<string | null>(null);
   const [session, setSession] = useState<OpenSessionResult | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -132,14 +131,6 @@ export function App() {
             if (id) markSeen(id);
           }}
           onOpenFile={(name, id) => openEntry(name, id)}
-        />
-        <div className="col-resizer" />
-
-        <EntryList
-          archive={selectedArchive}
-          activeKey={activeKey}
-          passesFilter={passesFilter}
-          onOpenEntry={(archive, entryPath) => openEntry(`${archive}::${entryPath}`)}
         />
         <div className="col-resizer" />
 

@@ -114,8 +114,7 @@ button {
 
 .cols { flex: 1; display: flex; min-height: 0; }
 .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.col-tree { width: 240px; background: var(--bg-panel); border-right: 1px solid var(--border); }
-.col-entries { width: 260px; background: var(--bg-panel); border-right: 1px solid var(--border); }
+.col-tree { width: 300px; background: var(--bg-panel); border-right: 1px solid var(--border); }
 .col-content { flex: 1; background: var(--bg); }
 .col-resizer { width: 4px; cursor: col-resize; background: transparent; flex-shrink: 0; }
 .col-resizer:hover { background: var(--accent-dim); }
