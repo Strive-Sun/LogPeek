@@ -479,9 +479,9 @@ fn normalize_events(
             EventKind::Access(_) => {}
             EventKind::Create(_) => {
                 for path in event.paths {
-                    if !is_top_level_path(watch_dir, &path) {
+                    let Some(path) = normalize_top_level_path(watch_dir, &path) else {
                         continue;
-                    }
+                    };
                     let path_key = path.to_string_lossy().into_owned();
                     if schedule.contains_key(&path_key) {
                         continue;
@@ -498,9 +498,9 @@ fn normalize_events(
             }
             EventKind::Remove(_) => {
                 for path in event.paths {
-                    if !is_top_level_path(watch_dir, &path) {
+                    let Some(path) = normalize_top_level_path(watch_dir, &path) else {
                         continue;
-                    }
+                    };
                     let key = path.to_string_lossy().into_owned();
                     changes.insert(key.clone(), DirectoryChange::Remove { path: key.clone() });
                     cancel.insert(key, path);
@@ -511,16 +511,15 @@ fn normalize_events(
                     force_rescan = true;
                     continue;
                 }
-                let old_path = &event.paths[0];
-                let new_path = &event.paths[1];
-                if !is_top_level_path(watch_dir, old_path)
-                    || !is_top_level_path(watch_dir, new_path)
-                {
+                let Some(old_path) = normalize_top_level_path(watch_dir, &event.paths[0]) else {
                     continue;
-                }
+                };
+                let Some(new_path) = normalize_top_level_path(watch_dir, &event.paths[1]) else {
+                    continue;
+                };
                 let old_key = old_path.to_string_lossy().into_owned();
                 cancel.insert(old_key.clone(), old_path.clone());
-                if let Some(node) = inventory_item(new_path, source) {
+                if let Some(node) = inventory_item(&new_path, source) {
                     let new_key = node.path.clone();
                     let needs_stable = node.kind != "dir";
                     changes.remove(&old_key);
@@ -533,7 +532,7 @@ fn normalize_events(
                         },
                     );
                     if needs_stable {
-                        schedule.insert(new_key, new_path.clone());
+                        schedule.insert(new_key, new_path);
                     }
                 } else {
                     force_rescan = true;
@@ -543,9 +542,9 @@ fn normalize_events(
                 // Some backends emit From/To as separate events and cannot reliably pair them.
                 force_rescan = true;
                 for path in event.paths {
-                    if !is_top_level_path(watch_dir, &path) {
+                    let Some(path) = normalize_top_level_path(watch_dir, &path) else {
                         continue;
-                    }
+                    };
                     let key = path.to_string_lossy().into_owned();
                     if path.is_file() {
                         schedule.insert(key, path);
@@ -556,9 +555,9 @@ fn normalize_events(
             }
             EventKind::Modify(_) => {
                 for path in event.paths {
-                    if !is_top_level_path(watch_dir, &path) {
+                    let Some(path) = normalize_top_level_path(watch_dir, &path) else {
                         continue;
-                    }
+                    };
                     let key = path.to_string_lossy().into_owned();
                     if schedule.contains_key(&key) {
                         continue;
@@ -610,8 +609,19 @@ fn rescan_batch(watch_dir: &Path, source: &str) -> DirectoryChangeBatch {
     }
 }
 
-fn is_top_level_path(watch_dir: &Path, path: &Path) -> bool {
-    path.parent() == Some(watch_dir)
+fn normalize_top_level_path(watch_dir: &Path, path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent == watch_dir {
+        return Some(path.to_path_buf());
+    }
+    // FSEvents canonicalizes `/var/...` to `/private/var/...`. Compare canonical parents,
+    // then rebuild the path with the registered directory so frontend node IDs stay stable.
+    let canonical_parent = std::fs::canonicalize(parent).ok()?;
+    let canonical_watch_dir = std::fs::canonicalize(watch_dir).ok()?;
+    if canonical_parent != canonical_watch_dir {
+        return None;
+    }
+    Some(watch_dir.join(path.file_name()?))
 }
 
 fn sort_inventory(items: &mut [DetectedItem]) {
@@ -817,6 +827,21 @@ mod tests {
             [DirectoryChange::Upsert { node }] if node.kind == "dir" && node.path == directory.to_string_lossy()
         ));
         assert!(normalized.schedule_stable.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_event_paths_are_rebased_to_the_registered_directory() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = FixtureDir::new();
+        let alias = fixture.path.with_extension("alias");
+        symlink(&fixture.path, &alias).unwrap();
+        let real_file = fixture.write("created.log", b"created");
+
+        let normalized = normalize_top_level_path(&alias, &real_file).unwrap();
+        assert_eq!(normalized, alias.join("created.log"));
+        let _ = std::fs::remove_file(alias);
     }
 
     #[test]
