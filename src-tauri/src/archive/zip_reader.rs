@@ -136,6 +136,10 @@ mod tests {
                 )
                 .unwrap();
             writer.write_all(&vec![b'x'; 256 * 1024]).unwrap();
+            writer
+                .start_file("image.bin", SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(&[0, 1, 2, 3]).unwrap();
             writer.finish().unwrap();
             Self { path }
         }
@@ -191,6 +195,30 @@ mod tests {
         assert_eq!(entry.seek(SeekFrom::End(1)).unwrap(), 28);
         let mut byte = [0u8; 1];
         assert_eq!(entry.read(&mut byte).unwrap(), 0);
+    }
+
+    #[test]
+    fn listing_reads_metadata_without_creating_extracted_files() {
+        let fixture = Fixture::new();
+        let archive_size = std::fs::metadata(&fixture.path).unwrap().len();
+        let mut archive = ZipArchiveReader::open(&fixture.path).unwrap();
+        let entries = archive.entries().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "stored.log" && entry.is_log));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "deflated.log" && entry.is_log));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.path == "image.bin" && !entry.is_log));
+        assert_eq!(
+            std::fs::metadata(&fixture.path).unwrap().len(),
+            archive_size
+        );
+        assert!(!fixture.path.with_file_name("stored.log").exists());
+        assert!(!fixture.path.with_file_name("deflated.log").exists());
     }
 
     #[test]

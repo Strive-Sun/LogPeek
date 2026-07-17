@@ -56,3 +56,64 @@ impl ArchiveReader for PlainReader {
         Ok(EntryReader::Seekable(Box::new(f)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FILE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+    struct Fixture {
+        path: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str, bytes: &[u8]) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "logpeek-plain-test-{}-{}",
+                std::process::id(),
+                FILE_SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Some(parent) = self.path.parent() {
+                let _ = std::fs::remove_dir_all(parent);
+            }
+        }
+    }
+
+    #[test]
+    fn plain_text_is_a_single_seekable_entry() {
+        let fixture = Fixture::new("sample.data", b"plain text\nsecond line");
+        let mut reader = PlainReader::open(&fixture.path).unwrap();
+        let entries = reader.entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_log);
+        assert_eq!(entries[0].size, 22);
+
+        let mut entry = reader.open_entry("sample.data").unwrap();
+        assert!(entry.is_seekable());
+        let mut content = String::new();
+        entry.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "plain text\nsecond line");
+    }
+
+    #[test]
+    fn binary_plain_entry_is_listed_but_not_marked_as_log() {
+        let fixture = Fixture::new("sample.bin", &[0, 1, 2, 3]);
+        let mut reader = PlainReader::open(&fixture.path).unwrap();
+        let entries = reader.entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].is_log);
+        assert!(reader.open_entry("missing.bin").is_err());
+    }
+}

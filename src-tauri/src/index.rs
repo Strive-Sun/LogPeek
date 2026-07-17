@@ -675,8 +675,10 @@ impl SessionManager {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
     use std::sync::mpsc;
+
+    static CACHE_TEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
     fn indexed_manager(bytes: Vec<u8>) -> (SessionManager, String, Vec<IndexProgress>) {
         let manager = SessionManager::default();
@@ -863,5 +865,80 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alpha", "beta", "gamma"]
         );
+    }
+
+    #[test]
+    fn line_index_handles_empty_lines_crlf_and_tail_without_newline() {
+        let (manager, session_id, _) = indexed_manager(b"\nalpha\r\n\nomega".to_vec());
+        assert_eq!(manager.line_count(&session_id), 4);
+        let lines = manager.read_lines(&session_id, 0, 10).unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.content.as_str())
+                .collect::<Vec<_>>(),
+            ["", "alpha", "", "omega"]
+        );
+        assert_eq!(
+            manager.read_lines(&session_id, 3, 99).unwrap()[0].content,
+            "omega"
+        );
+        assert!(manager.read_lines(&session_id, 4, 1).unwrap().is_empty());
+        assert!(manager.read_lines(&session_id, 0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn oversized_line_is_truncated_and_marked() {
+        let mut bytes = vec![b'x'; MAX_LINE_BYTES + 100];
+        bytes.push(b'\n');
+        let (manager, session_id, _) = indexed_manager(bytes);
+        let lines = manager.read_lines(&session_id, 0, 1).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].truncated);
+        assert_eq!(lines[0].content.len(), MAX_LINE_BYTES);
+    }
+
+    #[test]
+    fn close_and_lru_eviction_remove_cache_files() {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "logpeek-index-test-{}-{}",
+            std::process::id(),
+            CACHE_TEST_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let manager = SessionManager::default();
+        manager.set_cache_dir(cache_dir.clone());
+
+        let closed = manager.prepare("closed.log".into(), 0).unwrap();
+        let closed_path = manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&closed.session_id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .cache_path
+            .clone();
+        manager.close(&closed.session_id);
+        assert!(!closed_path.exists());
+
+        let first = manager.prepare("first.log".into(), 0).unwrap();
+        let first_path = manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&first.session_id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .cache_path
+            .clone();
+        for index in 0..MAX_SESSIONS {
+            manager.prepare(format!("extra-{index}.log"), 0).unwrap();
+        }
+        assert_eq!(manager.line_count(&first.session_id), 0);
+        assert!(!first_path.exists());
+        manager.clear_all();
+        let _ = std::fs::remove_dir(cache_dir);
     }
 }

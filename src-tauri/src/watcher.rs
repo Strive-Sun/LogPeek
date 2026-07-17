@@ -119,7 +119,9 @@ impl WatchState {
         if name.contains('/') || name.contains('\\') {
             anyhow::bail!("名称不能包含路径分隔符");
         }
-        let parent = src.parent().ok_or_else(|| anyhow::anyhow!("无法确定父目录"))?;
+        let parent = src
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法确定父目录"))?;
         let dst = parent.join(name);
         if dst.exists() {
             anyhow::bail!("已存在同名目录: {name}");
@@ -167,7 +169,9 @@ impl WatchState {
             return true;
         }
         let lower = item.name.to_lowercase();
-        cfg.suffixes.iter().any(|s| lower.ends_with(&s.to_lowercase()))
+        cfg.suffixes
+            .iter()
+            .any(|s| lower.ends_with(&s.to_lowercase()))
     }
 
     /// 注册一个目录的 notify 监听;回调在稳定检测通过后触发
@@ -296,4 +300,114 @@ fn sample_text(path: &Path) -> bool {
 fn load_config(path: &Path) -> anyhow::Result<WatchConfig> {
     let data = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&data)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static DIR_SEQ: AtomicU64 = AtomicU64::new(1);
+
+    struct FixtureDir {
+        path: PathBuf,
+    }
+
+    impl FixtureDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "logpeek-watcher-test-{}-{}",
+                std::process::id(),
+                DIR_SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn write(&self, name: &str, bytes: &[u8]) -> PathBuf {
+            let path = self.path.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        }
+    }
+
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn item(name: &str, kind: &str) -> DetectedItem {
+        DetectedItem {
+            path: name.to_string(),
+            name: name.to_string(),
+            kind: kind.to_string(),
+            size: 1,
+            source: "test".into(),
+        }
+    }
+
+    #[test]
+    fn classify_recognizes_zip_logs_text_samples_and_binary_files() {
+        let fixture = FixtureDir::new();
+        let zip = fixture.write("download.part", b"PK\x03\x04");
+        let log = fixture.write("server.LOG", b"\0binary-looking extension still wins");
+        let sampled = fixture.write("notes.data", b"plain sampled text\n");
+        let binary = fixture.write("image.bin", &[0, 1, 2, 3]);
+
+        assert_eq!(classify(&zip, "test").unwrap().kind, "archive");
+        assert_eq!(classify(&log, "test").unwrap().kind, "file");
+        assert_eq!(classify(&sampled, "test").unwrap().kind, "file");
+        assert!(classify(&binary, "test").is_none());
+    }
+
+    #[test]
+    fn suffix_filter_is_case_insensitive_and_show_all_bypasses_it() {
+        let fixture = FixtureDir::new();
+        let state = WatchState::new(fixture.path.join("config.json"));
+        state.set_filter(vec![".log".into(), ".TXT".into()], false);
+        assert!(state.should_notify(&item("SERVER.LOG", "file")));
+        assert!(state.should_notify(&item("notes.txt", "file")));
+        assert!(!state.should_notify(&item("trace.out", "file")));
+        assert!(state.should_notify(&item("bundle.zip", "archive")));
+
+        state.set_filter(vec![], true);
+        assert!(state.should_notify(&item("anything.bin", "file")));
+    }
+
+    #[test]
+    fn configuration_persists_directories_and_filters() {
+        let fixture = FixtureDir::new();
+        let watched = fixture.path.join("watched");
+        std::fs::create_dir(&watched).unwrap();
+        let config_path = fixture.path.join("config.json");
+        {
+            let state = WatchState::new(config_path.clone());
+            state.add_dir(watched.to_str().unwrap()).unwrap();
+            state.set_filter(vec![".trace".into()], true);
+        }
+
+        let restored = WatchState::new(config_path);
+        assert_eq!(
+            restored.list_dirs(),
+            vec![watched.to_string_lossy().into_owned()]
+        );
+        assert_eq!(restored.get_filter(), (vec![".trace".into()], true));
+    }
+
+    #[test]
+    fn invalid_persisted_directory_is_skipped_without_panicking() {
+        let fixture = FixtureDir::new();
+        let missing = fixture.path.join("missing");
+        let config_path = fixture.path.join("config.json");
+        let config = WatchConfig {
+            dirs: vec![missing.to_string_lossy().into_owned()],
+            ..WatchConfig::default()
+        };
+        std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let state = WatchState::new(config_path);
+
+        assert!(state.start_watch(missing.to_str().unwrap(), |_| {}).is_ok());
+        assert!(state.scan_dir(missing.to_str().unwrap()).is_empty());
+    }
 }
