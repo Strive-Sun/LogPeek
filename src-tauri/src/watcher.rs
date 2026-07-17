@@ -961,6 +961,10 @@ mod tests {
             )
             .unwrap();
 
+        // FSEvents starts its stream asynchronously after `watch` returns.
+        #[cfg(target_os = "macos")]
+        std::thread::sleep(Duration::from_secs(1));
+
         let created = fixture.write("arriving.log", b"part one");
         // FSEvents may coalesce delivery for longer than Windows under loaded CI runners.
         let batch = change_rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -993,6 +997,9 @@ mod tests {
                 },
             )
             .unwrap();
+
+        #[cfg(target_os = "macos")]
+        std::thread::sleep(Duration::from_secs(1));
 
         std::fs::rename(&old, &new).unwrap();
         let batch = change_rx.recv_timeout(Duration::from_secs(2)).unwrap();
