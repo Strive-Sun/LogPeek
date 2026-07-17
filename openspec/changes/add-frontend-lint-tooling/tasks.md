@@ -8,7 +8,7 @@
 - [ ] 2.2 添加 `lint` 脚本并修复暴露的问题
 
 ## 3. CI
-- [ ] 3.1 CI 增加 `format:check` 与 `lint` 步骤
+- [ ] 3.1 在现有 frontend CI job 中增加 `format:check` 与 `lint` 步骤,保留既有类型检查与构建
 
 ## 4. UI 基元策略
-- [ ] 4.1 在 project.md 明确"手写轻量组件、暂不引入 Radix"的策略
+- [x] 4.1 确认 project.md 已明确"手写轻量组件、暂不引入 Radix/shadcn"的策略
