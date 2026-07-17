@@ -60,3 +60,10 @@ Codex 审阅通过 Claude Code 官方插件 [openai/codex-plugin-cc](https://git
 - Codex 审阅约定与插件安装步骤见 `CLAUDE.md`「代码审阅约定」。
 - OpenSpec 规范见 `openspec/AGENTS.md`。
 - git 安全:默认不改 `main` 直推;提交只在用户明确要求时进行。
+
+## 发布版本号
+
+- 应用版本的唯一人工维护来源是 `src-tauri/Cargo.toml` 中的 `[package].version`。
+- `tauri.conf.json` 不重复声明版本；Tauri 2 会自动使用 Cargo package version。
+- 根目录 npm package 是私有前端工程,不声明发布版本。
+- 修改 `Cargo.toml` 后运行 `cargo check`,由 Cargo 自动同步 `Cargo.lock`,不要手工修改 lockfile。

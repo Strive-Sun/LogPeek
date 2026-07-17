@@ -1,5 +1,6 @@
 [package]
 name = "logpeek"
+# 应用版本的唯一人工维护来源；Tauri 配置省略 version 后会自动读取此值。
 version = "1.0.0"
 description = "免解压跨平台桌面日志阅读器"
 authors = ["LogPeek"]
