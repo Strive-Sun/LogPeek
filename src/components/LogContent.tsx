@@ -11,6 +11,7 @@ interface Props {
 }
 
 const PAGE = 200;
+const ENCODINGS = ['UTF-8', 'GBK', 'GB18030', 'UTF-16LE', 'UTF-16BE'];
 
 export function LogContent({ session, activeKey }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -18,10 +19,22 @@ export function LogContent({ session, activeKey }: Props) {
   const [indexedLines, setIndexedLines] = useState(0);
   const [totalLines, setTotalLines] = useState(0);
   const [indexing, setIndexing] = useState(false);
+  const [effectiveEncoding, setEffectiveEncoding] = useState('Detecting');
+  const [detectedEncoding, setDetectedEncoding] = useState('Detecting');
+  const [encodingChanging, setEncodingChanging] = useState(false);
+  const [encodingPercent, setEncodingPercent] = useState(0);
   // 行缓存:行号 → 内容
   const [cache, setCache] = useState<Map<number, LogLine>>(new Map());
   const [currentLine, setCurrentLine] = useState(1);
   const pending = useRef<Set<number>>(new Set());
+  const encodingUnsub = useRef<() => void>(() => {});
+
+  useEffect(
+    () => () => {
+      encodingUnsub.current();
+    },
+    [],
+  );
 
   // 打开新条目:重置并按需订阅建索引进度
   useEffect(() => {
@@ -31,6 +44,10 @@ export function LogContent({ session, activeKey }: Props) {
     const total = api.lineCount(activeKey);
     setTotalLines(total);
     setIndexedLines(total);
+    setEffectiveEncoding(session.encoding);
+    setDetectedEncoding(session.encoding);
+    setEncodingChanging(false);
+    encodingUnsub.current();
     scrollRef.current?.scrollTo({ top: 0 });
 
     if (session.indexing) {
@@ -42,6 +59,8 @@ export function LogContent({ session, activeKey }: Props) {
           setPercent(p.percent);
           setIndexedLines(p.indexedLines);
           setTotalLines(p.indexedLines);
+          setDetectedEncoding(p.detectedEncoding);
+          setEffectiveEncoding(p.effectiveEncoding);
         },
         (finalTotal) => {
           setIndexing(false);
@@ -91,6 +110,34 @@ export function LogContent({ session, activeKey }: Props) {
     }
   }, [items, activeKey, cache, totalLines]);
 
+  async function changeEncoding(encoding: string) {
+    if (!activeKey || encoding === effectiveEncoding) return;
+    encodingUnsub.current();
+    setEncodingChanging(true);
+    setEncodingPercent(0);
+    try {
+      const generation = await api.setSessionEncoding(activeKey, encoding);
+      encodingUnsub.current = api.subscribeEncodingProgress(activeKey, generation, (progress) => {
+        setEncodingPercent(progress.percent);
+        if (!progress.done) return;
+        setEncodingChanging(false);
+        if (progress.failed) {
+          alert(`切换编码失败: ${progress.error ?? '未知错误'}`);
+          return;
+        }
+        setEffectiveEncoding(progress.encoding);
+        setTotalLines(progress.lineCount);
+        setIndexedLines(progress.lineCount);
+        setCache(new Map());
+        pending.current = new Set();
+        scrollRef.current?.scrollTo({ top: 0 });
+      });
+    } catch (error) {
+      setEncodingChanging(false);
+      alert(`切换编码失败: ${String(error)}`);
+    }
+  }
+
   if (!session && !activeKey) {
     return (
       <div className="col col-content">
@@ -129,6 +176,16 @@ export function LogContent({ session, activeKey }: Props) {
         </div>
       )}
 
+      {encodingChanging && (
+        <div className="index-bar">
+          <span>重建编码索引 {encodingPercent}%</span>
+          <div className="track">
+            <div className="fill" style={{ width: `${encodingPercent}%` }} />
+          </div>
+          <span>{effectiveEncoding}</span>
+        </div>
+      )}
+
       <div className="log-view" ref={scrollRef}>
         <div
           style={{
@@ -154,7 +211,20 @@ export function LogContent({ session, activeKey }: Props) {
       </div>
 
       <div className="col-foot" style={{ display: 'flex', gap: 16 }}>
-        <span>{session?.encoding ?? 'UTF-8'} ▾</span>
+        <select
+          className="encoding-select"
+          value={effectiveEncoding}
+          disabled={indexing || encodingChanging}
+          title={`自动检测: ${detectedEncoding}`}
+          onChange={(event) => void changeEncoding(event.target.value)}
+        >
+          {effectiveEncoding === 'Detecting' && <option value="Detecting">检测中…</option>}
+          {ENCODINGS.map((encoding) => (
+            <option key={encoding} value={encoding}>
+              {encoding}
+            </option>
+          ))}
+        </select>
         <span>
           行 {fmtNum(currentLine)}/{fmtNum(totalLines)}
         </span>

@@ -263,6 +263,8 @@ fn open_log_session(
                     indexed_lines: 0,
                     done: true,
                     failed: true,
+                    detected_encoding: "Unknown".into(),
+                    effective_encoding: "UTF-8".into(),
                     error: Some(error.to_string()),
                 };
                 let _ = app.emit("index-progress", event);
@@ -279,6 +281,8 @@ fn open_log_session(
                 indexed_lines: 0,
                 done: true,
                 failed: true,
+                detected_encoding: "Unknown".into(),
+                effective_encoding: "UTF-8".into(),
                 error: Some(error.to_string()),
             };
             let _ = app.emit("index-progress", event);
@@ -303,6 +307,27 @@ fn read_lines(
 #[tauri::command]
 fn line_count(state: State<AppState>, session_id: String) -> u64 {
     state.sessions.line_count(&session_id)
+}
+
+#[tauri::command]
+fn set_session_encoding(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    session_id: String,
+    encoding: String,
+) -> Result<u64, String> {
+    let change = state
+        .sessions
+        .prepare_encoding_change(&session_id, &encoding)
+        .map_err(|error| error.to_string())?;
+    let generation = change.generation();
+    let sessions = state.sessions.clone();
+    std::thread::spawn(move || {
+        sessions.apply_encoding_change(change, |event| {
+            let _ = app.emit("encoding-progress", event);
+        });
+    });
+    Ok(generation)
 }
 
 #[tauri::command]
@@ -365,6 +390,7 @@ pub fn run() {
             open_log_session,
             read_lines,
             line_count,
+            set_session_encoding,
             close_log_session
         ])
         .run(tauri::generate_context!())

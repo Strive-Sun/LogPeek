@@ -3,6 +3,7 @@
 
 import type {
   ArchiveEntry,
+  EncodingProgress,
   IndexProgress,
   LogLine,
   NewLogItem,
@@ -96,6 +97,8 @@ const ARCHIVE_ENTRIES: Record<string, string[]> = {
 };
 
 let progressTimer: number | undefined;
+let encodingGeneration = 0;
+const encodingByKey = new Map<string, string>();
 
 export const mockApi = {
   async listWatchDirs(): Promise<TreeNode[]> {
@@ -204,6 +207,8 @@ export const mockApi = {
           indexedLines: total,
           done: true,
           failed: false,
+          detectedEncoding: 'UTF-8',
+          effectiveEncoding: encodingByKey.get(entryKey) ?? 'UTF-8',
         });
         onDone(total);
         if (progressTimer) window.clearInterval(progressTimer);
@@ -215,6 +220,8 @@ export const mockApi = {
         indexedLines: Math.floor((total * percent) / 100),
         done: false,
         failed: false,
+        detectedEncoding: 'UTF-8',
+        effectiveEncoding: encodingByKey.get(entryKey) ?? 'UTF-8',
       });
     }, 180);
     return () => progressTimer && window.clearInterval(progressTimer);
@@ -239,6 +246,31 @@ export const mockApi = {
 
   lineCount(entryKey: string): number {
     return ENTRY_TABLE[entryKey]?.lineCount ?? 0;
+  },
+
+  async setSessionEncoding(entryKey: string, encoding: string): Promise<number> {
+    encodingByKey.set(entryKey, encoding);
+    encodingGeneration += 1;
+    return encodingGeneration;
+  },
+
+  subscribeEncodingProgress(
+    entryKey: string,
+    generation: number,
+    onProgress: (progress: EncodingProgress) => void,
+  ): () => void {
+    const timer = window.setTimeout(() => {
+      onProgress({
+        sessionId: `sess:${entryKey}`,
+        generation,
+        percent: 100,
+        encoding: encodingByKey.get(entryKey) ?? 'UTF-8',
+        lineCount: ENTRY_TABLE[entryKey]?.lineCount ?? 0,
+        done: true,
+        failed: false,
+      });
+    }, 120);
+    return () => window.clearTimeout(timer);
   },
 
   async addWatchDir(): Promise<boolean> {

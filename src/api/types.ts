@@ -62,6 +62,20 @@ export interface IndexProgress {
   indexedLines: number;
   done: boolean;
   failed: boolean;
+  detectedEncoding: string;
+  effectiveEncoding: string;
+  error?: string;
+}
+
+/** 手动编码重建进度事件载荷 */
+export interface EncodingProgress {
+  sessionId: string;
+  generation: number;
+  percent: number;
+  encoding: string;
+  lineCount: number;
+  done: boolean;
+  failed: boolean;
   error?: string;
 }
 

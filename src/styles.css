@@ -238,6 +238,19 @@ body.resizing {
   flex-shrink: 0;
 }
 
+.encoding-select {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.encoding-select:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 /* ===== 目录树 / 条目列表 ===== */
 .tree-node,
 .entry-row {

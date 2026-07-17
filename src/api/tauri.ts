@@ -7,6 +7,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import type {
   ArchiveEntry,
   DetectedItem,
+  EncodingProgress,
   IndexProgress,
   LogLine,
   NewLogItem,
@@ -21,12 +22,19 @@ const sessionByKey = new Map<string, string>();
 const totalByKey = new Map<string, number>();
 const latestProgress = new Map<string, IndexProgress>();
 const progressSubscribers = new Map<string, Set<(progress: IndexProgress) => void>>();
+const latestEncodingProgress = new Map<string, EncodingProgress>();
+const encodingSubscribers = new Map<string, Set<(progress: EncodingProgress) => void>>();
 
 // Start listening before any session opens so fast jobs can be replayed to late subscribers.
 const progressListenerReady = listen<IndexProgress>('index-progress', (event) => {
   const progress = event.payload;
   latestProgress.set(progress.sessionId, progress);
   progressSubscribers.get(progress.sessionId)?.forEach((subscriber) => subscriber(progress));
+});
+const encodingListenerReady = listen<EncodingProgress>('encoding-progress', (event) => {
+  const progress = event.payload;
+  latestEncodingProgress.set(progress.sessionId, progress);
+  encodingSubscribers.get(progress.sessionId)?.forEach((subscriber) => subscriber(progress));
 });
 
 interface RawChild {
@@ -140,6 +148,44 @@ export const tauriApi = {
 
   lineCount(entryKey: string): number {
     return totalByKey.get(entryKey) ?? 0;
+  },
+
+  async setSessionEncoding(entryKey: string, encoding: string): Promise<number> {
+    await encodingListenerReady;
+    const sessionId = sessionByKey.get(entryKey);
+    if (!sessionId) throw new Error('session not found');
+    latestEncodingProgress.delete(sessionId);
+    return invoke<number>('set_session_encoding', { sessionId, encoding });
+  },
+
+  subscribeEncodingProgress(
+    entryKey: string,
+    generation: number,
+    onProgress: (progress: EncodingProgress) => void,
+  ): () => void {
+    const sessionId = sessionByKey.get(entryKey);
+    if (!sessionId) return () => {};
+    let finished = false;
+    const subscriber = (progress: EncodingProgress) => {
+      if (finished || progress.generation !== generation) return;
+      onProgress(progress);
+      if (progress.done) {
+        finished = true;
+        encodingSubscribers.get(sessionId)?.delete(subscriber);
+        latestEncodingProgress.delete(sessionId);
+      }
+    };
+    const subscribers = encodingSubscribers.get(sessionId) ?? new Set();
+    subscribers.add(subscriber);
+    encodingSubscribers.set(sessionId, subscribers);
+    const latest = latestEncodingProgress.get(sessionId);
+    if (latest) subscriber(latest);
+    return () => {
+      finished = true;
+      const current = encodingSubscribers.get(sessionId);
+      current?.delete(subscriber);
+      if (current?.size === 0) encodingSubscribers.delete(sessionId);
+    };
   },
 
   /** 弹出文件夹选择器,添加监控目录;返回是否添加成功 */

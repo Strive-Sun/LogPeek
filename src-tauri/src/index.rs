@@ -42,6 +42,22 @@ pub struct IndexProgress {
     pub indexed_lines: u64,
     pub done: bool,
     pub failed: bool,
+    pub detected_encoding: String,
+    pub effective_encoding: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodingProgress {
+    pub session_id: String,
+    pub generation: u64,
+    pub percent: u8,
+    pub encoding: String,
+    pub line_count: u64,
+    pub done: bool,
+    pub failed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -50,13 +66,72 @@ pub struct Session {
     cache_path: PathBuf,
     /// Starts of complete lines, followed by the current readable boundary.
     offsets: Vec<u64>,
-    encoding: &'static Encoding,
+    detected_encoding: Option<&'static Encoding>,
+    effective_encoding: &'static Encoding,
+    indexing: bool,
+    encoding_generation: u64,
     cancel: Arc<AtomicBool>,
 }
 
 impl Session {
     pub fn line_count(&self) -> u64 {
         self.offsets.len().saturating_sub(1) as u64
+    }
+}
+
+pub struct EncodingChange {
+    session_id: String,
+    session: Arc<Mutex<Session>>,
+    cache_path: PathBuf,
+    cancel: Arc<AtomicBool>,
+    encoding: &'static Encoding,
+    generation: u64,
+}
+
+impl EncodingChange {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+struct LineScanner {
+    encoding: &'static Encoding,
+    pending_utf16_byte: Option<u8>,
+}
+
+impl LineScanner {
+    fn new(encoding: &'static Encoding) -> Self {
+        Self {
+            encoding,
+            pending_utf16_byte: None,
+        }
+    }
+
+    fn scan(&mut self, bytes: &[u8], base: u64) -> Vec<u64> {
+        if self.encoding != encoding_rs::UTF_16LE && self.encoding != encoding_rs::UTF_16BE {
+            return bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, byte)| (*byte == b'\n').then_some(base + index as u64 + 1))
+                .collect();
+        }
+
+        let mut offsets = Vec::new();
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            if let Some(first) = self.pending_utf16_byte.take() {
+                let code_unit = if self.encoding == encoding_rs::UTF_16LE {
+                    u16::from_le_bytes([first, byte])
+                } else {
+                    u16::from_be_bytes([first, byte])
+                };
+                if code_unit == b'\n' as u16 {
+                    offsets.push(base + index as u64 + 1);
+                }
+            } else {
+                self.pending_utf16_byte = Some(byte);
+            }
+        }
+        offsets
     }
 }
 
@@ -93,13 +168,96 @@ impl SessionManager {
         if sample.starts_with(&[0xEF, 0xBB, 0xBF]) {
             return encoding_rs::UTF_8;
         }
-        if sample.starts_with(&[0xFF, 0xFE]) || sample.starts_with(&[0xFE, 0xFF]) {
+        if sample.starts_with(&[0xFF, 0xFE]) {
             return encoding_rs::UTF_16LE;
+        }
+        if sample.starts_with(&[0xFE, 0xFF]) {
+            return encoding_rs::UTF_16BE;
         }
         if std::str::from_utf8(sample).is_ok() {
             encoding_rs::UTF_8
         } else {
-            encoding_rs::GBK
+            encoding_rs::GB18030
+        }
+    }
+
+    fn encoding_by_name(name: &str) -> anyhow::Result<&'static Encoding> {
+        match name.trim().to_ascii_uppercase().as_str() {
+            "UTF-8" | "UTF8" => Ok(encoding_rs::UTF_8),
+            "GBK" => Ok(encoding_rs::GBK),
+            "GB18030" => Ok(encoding_rs::GB18030),
+            "UTF-16LE" | "UTF16LE" => Ok(encoding_rs::UTF_16LE),
+            "UTF-16BE" | "UTF16BE" => Ok(encoding_rs::UTF_16BE),
+            _ => anyhow::bail!("unsupported encoding: {name}"),
+        }
+    }
+
+    fn encoding_name(encoding: &'static Encoding) -> String {
+        if encoding == encoding_rs::UTF_8 {
+            "UTF-8"
+        } else if encoding == encoding_rs::GBK {
+            "GBK"
+        } else if encoding == encoding_rs::GB18030 {
+            "GB18030"
+        } else if encoding == encoding_rs::UTF_16LE {
+            "UTF-16LE"
+        } else if encoding == encoding_rs::UTF_16BE {
+            "UTF-16BE"
+        } else {
+            encoding.name()
+        }
+        .to_string()
+    }
+
+    fn append_index_chunk(
+        session: &Arc<Mutex<Session>>,
+        output: &mut BufWriter<File>,
+        scanner: &mut LineScanner,
+        bytes: &[u8],
+        written: &mut u64,
+        max_uncompressed: u64,
+    ) -> anyhow::Result<u64> {
+        let next_written = written.saturating_add(bytes.len() as u64);
+        if next_written > max_uncompressed {
+            anyhow::bail!("uncompressed content exceeds the size limit");
+        }
+        output.write_all(bytes)?;
+        let new_offsets = scanner.scan(bytes, *written);
+        *written = next_written;
+        // A reader must never observe an offset before the corresponding bytes.
+        output.flush()?;
+        let mut current = session.lock().unwrap();
+        current.offsets.extend(new_offsets);
+        Ok(current.line_count())
+    }
+
+    fn trim_line_bytes(raw: &mut Vec<u8>, encoding: &'static Encoding, first_line: bool) {
+        if encoding == encoding_rs::UTF_16LE || encoding == encoding_rs::UTF_16BE {
+            while raw.len() >= 2 {
+                let pair = [raw[raw.len() - 2], raw[raw.len() - 1]];
+                let code_unit = if encoding == encoding_rs::UTF_16LE {
+                    u16::from_le_bytes(pair)
+                } else {
+                    u16::from_be_bytes(pair)
+                };
+                if code_unit != b'\n' as u16 && code_unit != b'\r' as u16 {
+                    break;
+                }
+                raw.truncate(raw.len() - 2);
+            }
+            if first_line
+                && ((encoding == encoding_rs::UTF_16LE && raw.starts_with(&[0xFF, 0xFE]))
+                    || (encoding == encoding_rs::UTF_16BE && raw.starts_with(&[0xFE, 0xFF])))
+            {
+                raw.drain(..2);
+            }
+        } else {
+            while matches!(raw.last(), Some(b'\n') | Some(b'\r')) {
+                raw.pop();
+            }
+            if first_line && raw.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                raw.drain(..3);
+            }
         }
     }
 
@@ -114,7 +272,10 @@ impl SessionManager {
         let session = Session {
             cache_path,
             offsets: vec![0],
-            encoding: encoding_rs::UTF_8,
+            detected_encoding: None,
+            effective_encoding: encoding_rs::UTF_8,
+            indexing: true,
+            encoding_generation: 0,
             cancel: Arc::new(AtomicBool::new(false)),
         };
         self.sessions
@@ -128,7 +289,7 @@ impl SessionManager {
             entry_path,
             size: declared_size,
             indexing: true,
-            encoding: encoding_rs::UTF_8.name().to_string(),
+            encoding: "Detecting".to_string(),
         })
     }
 
@@ -171,9 +332,44 @@ impl SessionManager {
         let result = (|| -> anyhow::Result<u64> {
             let mut out = BufWriter::new(File::create(&cache_path)?);
             let mut written = 0u64;
-            let mut sample = Vec::with_capacity(4096);
+            let mut sample = [0u8; 4096];
+            let sample_len = reader.read(&mut sample)?;
+            let encoding = Self::detect_encoding(&sample[..sample_len]);
+            let encoding_name = Self::encoding_name(encoding);
+            {
+                let mut current = session.lock().unwrap();
+                current.detected_encoding = Some(encoding);
+                current.effective_encoding = encoding;
+            }
+            let mut scanner = LineScanner::new(encoding);
             let mut buf = [0u8; 64 * 1024];
             let mut last_emit: Option<Instant> = None;
+
+            if sample_len > 0 {
+                let indexed_lines = Self::append_index_chunk(
+                    &session,
+                    &mut out,
+                    &mut scanner,
+                    &sample[..sample_len],
+                    &mut written,
+                    max_uncompressed,
+                )?;
+                progress(IndexProgress {
+                    session_id: session_id.to_string(),
+                    percent: written
+                        .saturating_mul(100)
+                        .checked_div(declared_size)
+                        .unwrap_or(0)
+                        .min(99) as u8,
+                    indexed_lines,
+                    done: false,
+                    failed: false,
+                    detected_encoding: encoding_name.clone(),
+                    effective_encoding: encoding_name.clone(),
+                    error: None,
+                });
+                last_emit = Some(Instant::now());
+            }
 
             loop {
                 if cancel.load(Ordering::Acquire) {
@@ -183,29 +379,14 @@ impl SessionManager {
                 if n == 0 {
                     break;
                 }
-                if sample.len() < 4096 {
-                    sample.extend_from_slice(&buf[..n.min(4096 - sample.len())]);
-                }
-                out.write_all(&buf[..n])?;
-                let mut new_offsets = Vec::new();
-                for (i, &byte) in buf[..n].iter().enumerate() {
-                    if byte == b'\n' {
-                        new_offsets.push(written + i as u64 + 1);
-                    }
-                }
-                written += n as u64;
-                if written > max_uncompressed {
-                    anyhow::bail!("uncompressed content exceeds the size limit");
-                }
-
-                // A reader must never observe an offset before the corresponding bytes.
-                out.flush()?;
-                let indexed_lines = {
-                    let mut current = session.lock().unwrap();
-                    current.encoding = Self::detect_encoding(&sample);
-                    current.offsets.extend(new_offsets);
-                    current.line_count()
-                };
+                let indexed_lines = Self::append_index_chunk(
+                    &session,
+                    &mut out,
+                    &mut scanner,
+                    &buf[..n],
+                    &mut written,
+                    max_uncompressed,
+                )?;
                 let percent = written
                     .saturating_mul(100)
                     .checked_div(declared_size)
@@ -222,6 +403,8 @@ impl SessionManager {
                         indexed_lines,
                         done: false,
                         failed: false,
+                        detected_encoding: encoding_name.clone(),
+                        effective_encoding: encoding_name.clone(),
                         error: None,
                     });
                     last_emit = Some(now);
@@ -234,30 +417,165 @@ impl SessionManager {
                 if *current.offsets.last().unwrap() != written {
                     current.offsets.push(written);
                 }
-                current.encoding = Self::detect_encoding(&sample);
+                current.indexing = false;
                 current.line_count()
             };
             Ok(indexed_lines)
         })();
 
         match result {
-            Ok(indexed_lines) => progress(IndexProgress {
-                session_id: session_id.to_string(),
+            Ok(indexed_lines) => {
+                let current = session.lock().unwrap();
+                let detected = current.detected_encoding.unwrap_or(encoding_rs::UTF_8);
+                progress(IndexProgress {
+                    session_id: session_id.to_string(),
+                    percent: 100,
+                    indexed_lines,
+                    done: true,
+                    failed: false,
+                    detected_encoding: Self::encoding_name(detected),
+                    effective_encoding: Self::encoding_name(current.effective_encoding),
+                    error: None,
+                });
+            }
+            Err(_) if cancel.load(Ordering::Acquire) => {}
+            Err(error) => {
+                let mut current = session.lock().unwrap();
+                current.indexing = false;
+                let detected = current.detected_encoding.unwrap_or(encoding_rs::UTF_8);
+                progress(IndexProgress {
+                    session_id: session_id.to_string(),
+                    percent: 100,
+                    indexed_lines: current.line_count(),
+                    done: true,
+                    failed: true,
+                    detected_encoding: Self::encoding_name(detected),
+                    effective_encoding: Self::encoding_name(current.effective_encoding),
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+    }
+
+    pub fn prepare_encoding_change(
+        &self,
+        session_id: &str,
+        encoding_name: &str,
+    ) -> anyhow::Result<EncodingChange> {
+        let encoding = Self::encoding_by_name(encoding_name)?;
+        let session = {
+            let sessions = self.sessions.lock().unwrap();
+            sessions.get(session_id).cloned()
+        }
+        .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
+        self.touch_lru(session_id);
+        let mut current = session.lock().unwrap();
+        if current.indexing {
+            anyhow::bail!("wait for initial indexing to finish before changing encoding");
+        }
+        current.encoding_generation = current.encoding_generation.saturating_add(1);
+        let change = EncodingChange {
+            session_id: session_id.to_string(),
+            session: session.clone(),
+            cache_path: current.cache_path.clone(),
+            cancel: current.cancel.clone(),
+            encoding,
+            generation: current.encoding_generation,
+        };
+        drop(current);
+        Ok(change)
+    }
+
+    pub fn apply_encoding_change<F>(&self, change: EncodingChange, mut progress: F)
+    where
+        F: FnMut(EncodingProgress),
+    {
+        let encoding_name = Self::encoding_name(change.encoding);
+        let result = (|| -> anyhow::Result<Option<u64>> {
+            let mut file = File::open(&change.cache_path)?;
+            let total_bytes = file.metadata()?.len();
+            let mut offsets = vec![0u64];
+            let mut scanner = LineScanner::new(change.encoding);
+            let mut buffer = [0u8; 64 * 1024];
+            let mut read_bytes = 0u64;
+            let mut last_emit: Option<Instant> = None;
+
+            loop {
+                if change.cancel.load(Ordering::Acquire) {
+                    return Ok(None);
+                }
+                if change.session.lock().unwrap().encoding_generation != change.generation {
+                    return Ok(None);
+                }
+                let count = file.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                offsets.extend(scanner.scan(&buffer[..count], read_bytes));
+                read_bytes += count as u64;
+                let now = Instant::now();
+                if last_emit
+                    .map(|last| now.duration_since(last) >= Duration::from_millis(50))
+                    .unwrap_or(true)
+                {
+                    progress(EncodingProgress {
+                        session_id: change.session_id.clone(),
+                        generation: change.generation,
+                        percent: read_bytes
+                            .saturating_mul(100)
+                            .checked_div(total_bytes)
+                            .unwrap_or(0)
+                            .min(99) as u8,
+                        encoding: encoding_name.clone(),
+                        line_count: offsets.len().saturating_sub(1) as u64,
+                        done: false,
+                        failed: false,
+                        error: None,
+                    });
+                    last_emit = Some(now);
+                }
+            }
+
+            if *offsets.last().unwrap() != total_bytes {
+                offsets.push(total_bytes);
+            }
+            let mut current = change.session.lock().unwrap();
+            if current.encoding_generation != change.generation
+                || change.cancel.load(Ordering::Acquire)
+            {
+                return Ok(None);
+            }
+            current.effective_encoding = change.encoding;
+            current.offsets = offsets;
+            Ok(Some(current.line_count()))
+        })();
+
+        match result {
+            Ok(Some(line_count)) => progress(EncodingProgress {
+                session_id: change.session_id,
+                generation: change.generation,
                 percent: 100,
-                indexed_lines,
+                encoding: encoding_name,
+                line_count,
                 done: true,
                 failed: false,
                 error: None,
             }),
-            Err(_) if cancel.load(Ordering::Acquire) => {}
-            Err(error) => progress(IndexProgress {
-                session_id: session_id.to_string(),
-                percent: 100,
-                indexed_lines: session.lock().unwrap().line_count(),
-                done: true,
-                failed: true,
-                error: Some(error.to_string()),
-            }),
+            Ok(None) => {}
+            Err(error) => {
+                if change.session.lock().unwrap().encoding_generation == change.generation {
+                    progress(EncodingProgress {
+                        session_id: change.session_id,
+                        generation: change.generation,
+                        percent: 100,
+                        encoding: encoding_name,
+                        line_count: 0,
+                        done: true,
+                        failed: true,
+                        error: Some(error.to_string()),
+                    });
+                }
+            }
         }
     }
 
@@ -307,10 +625,8 @@ impl SessionManager {
             let mut raw = vec![0u8; read_len];
             file.seek(SeekFrom::Start(from))?;
             file.read_exact(&mut raw)?;
-            while matches!(raw.last(), Some(b'\n') | Some(b'\r')) {
-                raw.pop();
-            }
-            let (text, _, _) = session.encoding.decode(&raw);
+            Self::trim_line_bytes(&mut raw, session.effective_encoding, line_no == 0);
+            let (text, _, _) = session.effective_encoding.decode(&raw);
             lines.push(LogLine {
                 line_no: line_no + 1,
                 content: text.into_owned(),
@@ -361,6 +677,40 @@ mod tests {
     use std::io::Cursor;
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
+
+    fn indexed_manager(bytes: Vec<u8>) -> (SessionManager, String, Vec<IndexProgress>) {
+        let manager = SessionManager::default();
+        let open = manager
+            .prepare("encoding.log".into(), bytes.len() as u64)
+            .unwrap();
+        let mut events = Vec::new();
+        manager.index(
+            &open.session_id,
+            bytes.len() as u64,
+            Cursor::new(bytes),
+            |event| events.push(event),
+        );
+        (manager, open.session_id, events)
+    }
+
+    fn utf16_bytes(text: &str, big_endian: bool, bom: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        if bom {
+            bytes.extend(if big_endian {
+                [0xFE, 0xFF]
+            } else {
+                [0xFF, 0xFE]
+            });
+        }
+        for unit in text.encode_utf16() {
+            bytes.extend(if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            });
+        }
+        bytes
+    }
 
     #[test]
     fn publishes_readable_lines_before_indexing_finishes() {
@@ -453,5 +803,65 @@ mod tests {
         assert!(events[0].done);
         assert!(events[0].failed);
         assert!(events[0].error.as_deref().unwrap().contains("size limit"));
+    }
+
+    #[test]
+    fn detects_and_reads_utf8_bom_and_gb18030() {
+        let (utf8_manager, utf8_id, utf8_events) =
+            indexed_manager(b"\xEF\xBB\xBFfirst\r\nsecond\n".to_vec());
+        assert_eq!(utf8_events.last().unwrap().effective_encoding, "UTF-8");
+        let utf8_lines = utf8_manager.read_lines(&utf8_id, 0, 10).unwrap();
+        assert_eq!(utf8_lines[0].content, "first");
+        assert_eq!(utf8_lines[1].content, "second");
+
+        let (encoded, _, had_errors) = encoding_rs::GB18030.encode("中文😀\n第二行");
+        assert!(!had_errors);
+        let (gb_manager, gb_id, gb_events) = indexed_manager(encoded.into_owned());
+        assert_eq!(gb_events.last().unwrap().effective_encoding, "GB18030");
+        let gb_lines = gb_manager.read_lines(&gb_id, 0, 10).unwrap();
+        assert_eq!(gb_lines[0].content, "中文😀");
+        assert_eq!(gb_lines[1].content, "第二行");
+    }
+
+    #[test]
+    fn indexes_utf16_in_both_byte_orders_and_strips_bom() {
+        for (big_endian, expected_name) in [(false, "UTF-16LE"), (true, "UTF-16BE")] {
+            let bytes = utf16_bytes("第一行\r\nsecond\n末行", big_endian, true);
+            let (manager, session_id, events) = indexed_manager(bytes);
+            assert_eq!(events.last().unwrap().effective_encoding, expected_name);
+            let lines = manager.read_lines(&session_id, 0, 10).unwrap();
+            assert_eq!(lines.len(), 3);
+            assert_eq!(lines[0].content, "第一行");
+            assert_eq!(lines[1].content, "second");
+            assert_eq!(lines[2].content, "末行");
+        }
+    }
+
+    #[test]
+    fn manual_encoding_change_rebuilds_offsets_and_latest_generation_wins() {
+        let bytes = utf16_bytes("alpha\nbeta\ngamma", false, false);
+        let (manager, session_id, _) = indexed_manager(bytes);
+        let stale = manager
+            .prepare_encoding_change(&session_id, "GB18030")
+            .unwrap();
+        let current = manager
+            .prepare_encoding_change(&session_id, "UTF-16LE")
+            .unwrap();
+        let mut stale_events = Vec::new();
+        manager.apply_encoding_change(stale, |event| stale_events.push(event));
+        assert!(stale_events.is_empty());
+
+        let mut events = Vec::new();
+        manager.apply_encoding_change(current, |event| events.push(event));
+        assert!(events.last().unwrap().done);
+        assert_eq!(events.last().unwrap().encoding, "UTF-16LE");
+        let lines = manager.read_lines(&session_id, 0, 10).unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.content.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "beta", "gamma"]
+        );
     }
 }
