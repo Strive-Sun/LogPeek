@@ -1,6 +1,6 @@
 [package]
 name = "logpeek"
-version = "0.1.0"
+version = "1.0.0"
 description = "免解压跨平台桌面日志阅读器"
 authors = ["LogPeek"]
 edition = "2021"
