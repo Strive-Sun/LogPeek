@@ -1,7 +1,4 @@
-//! 行偏移索引 + 窗口化加载 + 编码解码 + 会话生命周期(方案 A)。
-//!
-//! 打开条目时:把解压流一趟写入内部临时缓存文件(方案 A),
-//! 同时记录每行字节偏移;查看时对缓存文件 seek 读取指定行范围。
+//! Incremental line indexing, windowed reads, decoding, and session lifecycle.
 
 use encoding_rs::Encoding;
 use serde::Serialize;
@@ -9,13 +6,13 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-/// 解压后大小上限:超过则拒绝(方案 A,见设计文档)
 pub const MAX_UNCOMPRESSED: u64 = 2 * 1024 * 1024 * 1024;
-/// 单行返回上限,超过截断
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
+const MAX_SESSIONS: usize = 5;
 
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -37,12 +34,24 @@ pub struct OpenResult {
     pub encoding: String,
 }
 
-/// 一个查看会话:缓存文件 + 行偏移索引
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexProgress {
+    pub session_id: String,
+    pub percent: u8,
+    pub indexed_lines: u64,
+    pub done: bool,
+    pub failed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 pub struct Session {
     cache_path: PathBuf,
-    /// 每行起始字节偏移(末尾追加文件总长以便计算最后一行长度)
+    /// Starts of complete lines, followed by the current readable boundary.
     offsets: Vec<u64>,
     encoding: &'static Encoding,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Session {
@@ -53,7 +62,6 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // 关闭会话即清理临时缓存(方案 A:用完即清)
         let _ = std::fs::remove_file(&self.cache_path);
     }
 }
@@ -61,12 +69,9 @@ impl Drop for Session {
 #[derive(Default)]
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, Arc<Mutex<Session>>>>,
-    /// LRU 顺序(最近使用在末尾)
     lru: Mutex<Vec<String>>,
     cache_dir: Mutex<Option<PathBuf>>,
 }
-
-const MAX_SESSIONS: usize = 5;
 
 impl SessionManager {
     pub fn set_cache_dir(&self, dir: PathBuf) {
@@ -84,7 +89,6 @@ impl SessionManager {
         dir.join(format!("logpeek-{session_id}.cache"))
     }
 
-    /// 探测编码:BOM 优先,其次尝试 UTF-8,失败回退 GBK
     fn detect_encoding(sample: &[u8]) -> &'static Encoding {
         if sample.starts_with(&[0xEF, 0xBB, 0xBF]) {
             return encoding_rs::UTF_8;
@@ -99,74 +103,142 @@ impl SessionManager {
         }
     }
 
-    /// 打开条目:一趟顺序读入 reader → 写缓存文件 → 建行偏移索引(方案 A)。
-    /// reader 内容超过上限则中止并报错(按实际字节数熔断)。
-    pub fn open<R: Read>(
-        &self,
-        mut reader: R,
-        entry_path: String,
-        declared_size: u64,
-    ) -> anyhow::Result<OpenResult> {
+    /// Create an empty session so the command can return before indexing begins.
+    pub fn prepare(&self, entry_path: String, declared_size: u64) -> anyhow::Result<OpenResult> {
         if declared_size > MAX_UNCOMPRESSED {
-            anyhow::bail!("文件过大,超大文件支持将在后续版本提供");
+            anyhow::bail!("file is too large; files over 2GB are not supported");
         }
         let session_id = format!("s{}", SESSION_SEQ.fetch_add(1, Ordering::SeqCst));
         let cache_path = self.new_cache_path(&session_id);
-
-        let mut out = BufWriter::new(File::create(&cache_path)?);
-        let mut offsets: Vec<u64> = vec![0];
-        let mut written: u64 = 0;
-        let mut sample: Vec<u8> = Vec::with_capacity(4096);
-        let mut buf = [0u8; 64 * 1024];
-
-        loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            if sample.len() < 4096 {
-                sample.extend_from_slice(&buf[..n.min(4096 - sample.len())]);
-            }
-            out.write_all(&buf[..n])?;
-            // 记录换行位置(字节偏移),兼容 \n / \r\n(\r 在读取时剥离)
-            for (i, &b) in buf[..n].iter().enumerate() {
-                if b == b'\n' {
-                    offsets.push(written + i as u64 + 1);
-                }
-            }
-            written += n as u64;
-            if written > MAX_UNCOMPRESSED {
-                drop(out);
-                let _ = std::fs::remove_file(&cache_path);
-                anyhow::bail!("解压后超过 2GB 上限,已中止");
-            }
-        }
-        // 末尾补一个总长,便于取最后一行
-        if *offsets.last().unwrap() != written {
-            offsets.push(written);
-        }
-        out.flush()?;
-
-        let encoding = Self::detect_encoding(&sample);
+        File::create(&cache_path)?;
         let session = Session {
             cache_path,
-            offsets,
-            encoding,
+            offsets: vec![0],
+            encoding: encoding_rs::UTF_8,
+            cancel: Arc::new(AtomicBool::new(false)),
         };
-        let line_count = session.line_count();
-
-        let mut map = self.sessions.lock().unwrap();
-        map.insert(session_id.clone(), Arc::new(Mutex::new(session)));
-        drop(map);
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), Arc::new(Mutex::new(session)));
         self.touch_lru(&session_id);
 
         Ok(OpenResult {
             session_id,
             entry_path,
-            size: written,
-            indexing: line_count > 300_000,
-            encoding: encoding.name().to_string(),
+            size: declared_size,
+            indexing: true,
+            encoding: encoding_rs::UTF_8.name().to_string(),
         })
+    }
+
+    /// Fill a prepared session. Flushed bytes and their offsets are published atomically.
+    pub fn index<R, F>(&self, session_id: &str, declared_size: u64, mut reader: R, mut progress: F)
+    where
+        R: Read,
+        F: FnMut(IndexProgress),
+    {
+        let session = {
+            let map = self.sessions.lock().unwrap();
+            map.get(session_id).cloned()
+        };
+        let Some(session) = session else { return };
+        let (cache_path, cancel) = {
+            let session = session.lock().unwrap();
+            (session.cache_path.clone(), session.cancel.clone())
+        };
+
+        let result = (|| -> anyhow::Result<u64> {
+            let mut out = BufWriter::new(File::create(&cache_path)?);
+            let mut written = 0u64;
+            let mut sample = Vec::with_capacity(4096);
+            let mut buf = [0u8; 64 * 1024];
+            let mut last_emit: Option<Instant> = None;
+
+            loop {
+                if cancel.load(Ordering::Acquire) {
+                    anyhow::bail!("indexing cancelled");
+                }
+                let n = reader.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                if sample.len() < 4096 {
+                    sample.extend_from_slice(&buf[..n.min(4096 - sample.len())]);
+                }
+                out.write_all(&buf[..n])?;
+                let mut new_offsets = Vec::new();
+                for (i, &byte) in buf[..n].iter().enumerate() {
+                    if byte == b'\n' {
+                        new_offsets.push(written + i as u64 + 1);
+                    }
+                }
+                written += n as u64;
+                if written > MAX_UNCOMPRESSED {
+                    anyhow::bail!("uncompressed content exceeds the 2GB limit");
+                }
+
+                // A reader must never observe an offset before the corresponding bytes.
+                out.flush()?;
+                let indexed_lines = {
+                    let mut current = session.lock().unwrap();
+                    current.encoding = Self::detect_encoding(&sample);
+                    current.offsets.extend(new_offsets);
+                    current.line_count()
+                };
+                let percent = written
+                    .saturating_mul(100)
+                    .checked_div(declared_size)
+                    .unwrap_or(0)
+                    .min(99) as u8;
+                let now = Instant::now();
+                if last_emit
+                    .map(|last| now.duration_since(last) >= Duration::from_millis(50))
+                    .unwrap_or(true)
+                {
+                    progress(IndexProgress {
+                        session_id: session_id.to_string(),
+                        percent,
+                        indexed_lines,
+                        done: false,
+                        failed: false,
+                        error: None,
+                    });
+                    last_emit = Some(now);
+                }
+            }
+
+            out.flush()?;
+            let indexed_lines = {
+                let mut current = session.lock().unwrap();
+                if *current.offsets.last().unwrap() != written {
+                    current.offsets.push(written);
+                }
+                current.encoding = Self::detect_encoding(&sample);
+                current.line_count()
+            };
+            Ok(indexed_lines)
+        })();
+
+        match result {
+            Ok(indexed_lines) => progress(IndexProgress {
+                session_id: session_id.to_string(),
+                percent: 100,
+                indexed_lines,
+                done: true,
+                failed: false,
+                error: None,
+            }),
+            Err(_) if cancel.load(Ordering::Acquire) => {}
+            Err(error) => progress(IndexProgress {
+                session_id: session_id.to_string(),
+                percent: 100,
+                indexed_lines: session.lock().unwrap().line_count(),
+                done: true,
+                failed: true,
+                error: Some(error.to_string()),
+            }),
+        }
     }
 
     fn touch_lru(&self, session_id: &str) {
@@ -175,52 +247,57 @@ impl SessionManager {
         lru.push(session_id.to_string());
         while lru.len() > MAX_SESSIONS {
             let evict = lru.remove(0);
-            self.sessions.lock().unwrap().remove(&evict);
+            let removed = self.sessions.lock().unwrap().remove(&evict);
+            if let Some(session) = removed {
+                session
+                    .lock()
+                    .unwrap()
+                    .cancel
+                    .store(true, Ordering::Release);
+            }
         }
     }
 
-    /// 读取指定行范围(0-based start)
     pub fn read_lines(
         &self,
         session_id: &str,
         start: u64,
         count: u64,
     ) -> anyhow::Result<Vec<LogLine>> {
-        let sess = {
+        let session = {
             let map = self.sessions.lock().unwrap();
             map.get(session_id).cloned()
         };
-        let sess = sess.ok_or_else(|| anyhow::anyhow!("会话不存在: {session_id}"))?;
+        let session = session.ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
         self.touch_lru(session_id);
-        let sess = sess.lock().unwrap();
+        let session = session.lock().unwrap();
 
-        let total = sess.line_count();
+        let total = session.line_count();
         if start >= total {
             return Ok(vec![]);
         }
-        let end = (start + count).min(total);
-        let mut f = File::open(&sess.cache_path)?;
-        let mut out = Vec::with_capacity((end - start) as usize);
-        for ln in start..end {
-            let from = sess.offsets[ln as usize];
-            let to = sess.offsets[ln as usize + 1];
+        let end = start.saturating_add(count).min(total);
+        let mut file = File::open(&session.cache_path)?;
+        let mut lines = Vec::with_capacity((end - start) as usize);
+        for line_no in start..end {
+            let from = session.offsets[line_no as usize];
+            let to = session.offsets[line_no as usize + 1];
             let len = (to - from) as usize;
             let read_len = len.min(MAX_LINE_BYTES);
             let mut raw = vec![0u8; read_len];
-            f.seek(SeekFrom::Start(from))?;
-            f.read_exact(&mut raw)?;
-            // 剥离行尾 \n / \r
+            file.seek(SeekFrom::Start(from))?;
+            file.read_exact(&mut raw)?;
             while matches!(raw.last(), Some(b'\n') | Some(b'\r')) {
                 raw.pop();
             }
-            let (text, _, _) = sess.encoding.decode(&raw);
-            out.push(LogLine {
-                line_no: ln + 1,
+            let (text, _, _) = session.encoding.decode(&raw);
+            lines.push(LogLine {
+                line_no: line_no + 1,
                 content: text.into_owned(),
                 truncated: len > MAX_LINE_BYTES,
             });
         }
-        Ok(out)
+        Ok(lines)
     }
 
     pub fn line_count(&self, session_id: &str) -> u64 {
@@ -228,19 +305,82 @@ impl SessionManager {
             .lock()
             .unwrap()
             .get(session_id)
-            .map(|s| s.lock().unwrap().line_count())
+            .map(|session| session.lock().unwrap().line_count())
             .unwrap_or(0)
     }
 
     pub fn close(&self, session_id: &str) {
-        self.sessions.lock().unwrap().remove(session_id);
-        self.lru.lock().unwrap().retain(|s| s != session_id);
+        let removed = self.sessions.lock().unwrap().remove(session_id);
+        if let Some(session) = removed {
+            session
+                .lock()
+                .unwrap()
+                .cancel
+                .store(true, Ordering::Release);
+        }
+        self.lru.lock().unwrap().retain(|id| id != session_id);
     }
 
-    /// 进程退出兜底:清理全部会话缓存
     #[allow(dead_code)]
     pub fn clear_all(&self) {
-        self.sessions.lock().unwrap().clear();
+        let sessions = std::mem::take(&mut *self.sessions.lock().unwrap());
+        for session in sessions.into_values() {
+            session
+                .lock()
+                .unwrap()
+                .cancel
+                .store(true, Ordering::Release);
+        }
         self.lru.lock().unwrap().clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+
+    #[test]
+    fn publishes_readable_lines_before_indexing_finishes() {
+        let manager = Arc::new(SessionManager::default());
+        let open = manager.prepare("test.log".into(), 12).unwrap();
+        let session_id = open.session_id.clone();
+        let (tx, rx) = mpsc::channel();
+        let read_while_indexing = Arc::new(AtomicBool::new(false));
+        let observed = read_while_indexing.clone();
+        let reader_manager = manager.clone();
+        let reader_session_id = session_id.clone();
+        manager.index(&session_id, 12, Cursor::new(b"one\ntwo\nlast"), |event| {
+            if !event.done && event.indexed_lines > 0 {
+                let lines = reader_manager
+                    .read_lines(&reader_session_id, 0, 200)
+                    .unwrap();
+                assert!(!lines.is_empty());
+                observed.store(true, Ordering::Release);
+            }
+            tx.send(event).unwrap();
+        });
+
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(events.iter().any(|event| !event.done));
+        assert!(events.last().unwrap().done);
+        assert!(read_while_indexing.load(Ordering::Acquire));
+        assert_eq!(manager.line_count(&session_id), 3);
+        let lines = manager.read_lines(&session_id, 1, 99).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].content, "two");
+        assert_eq!(lines[1].content, "last");
+    }
+
+    #[test]
+    fn read_lines_clamps_to_the_published_boundary() {
+        let manager = SessionManager::default();
+        let open = manager.prepare("partial.log".into(), 0).unwrap();
+        assert!(manager
+            .read_lines(&open.session_id, 0, 200)
+            .unwrap()
+            .is_empty());
     }
 }

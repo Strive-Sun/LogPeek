@@ -60,6 +60,9 @@ export interface IndexProgress {
   sessionId: string;
   percent: number;
   indexedLines: number;
+  done: boolean;
+  failed: boolean;
+  error?: string;
 }
 
 /** 打开会话的结果 */

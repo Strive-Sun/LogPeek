@@ -30,22 +30,24 @@ export function LogContent({ session, activeKey }: Props) {
     pending.current = new Set();
     const total = api.lineCount(activeKey);
     setTotalLines(total);
+    setIndexedLines(total);
     scrollRef.current?.scrollTo({ top: 0 });
 
     if (session.indexing) {
       setIndexing(true);
       setPercent(0);
-      setIndexedLines(0);
       const unsub = api.subscribeIndexProgress(
         activeKey,
         (p) => {
           setPercent(p.percent);
           setIndexedLines(p.indexedLines);
+          setTotalLines(p.indexedLines);
         },
-        () => {
+        (finalTotal) => {
           setIndexing(false);
           setPercent(100);
-          setIndexedLines(total);
+          setIndexedLines(finalTotal);
+          setTotalLines(finalTotal);
         },
       );
       return unsub;
@@ -73,17 +75,21 @@ export function LogContent({ session, activeKey }: Props) {
     const last = items[items.length - 1].index;
     const endPage = Math.floor(last / PAGE) * PAGE;
     for (let p = start; p <= endPage; p += PAGE) {
-      if (pending.current.has(p) || cache.has(p)) continue;
+      const pageLast = Math.min(p + PAGE - 1, totalLines - 1);
+      if (pending.current.has(p) || cache.has(pageLast)) continue;
       pending.current.add(p);
-      api.readLines(activeKey, p, PAGE).then((lines) => {
-        setCache((prev) => {
-          const next = new Map(prev);
-          for (const l of lines) next.set(l.lineNo - 1, l);
-          return next;
-        });
-      });
+      api
+        .readLines(activeKey, p, PAGE)
+        .then((lines) => {
+          setCache((prev) => {
+            const next = new Map(prev);
+            for (const l of lines) next.set(l.lineNo - 1, l);
+            return next;
+          });
+        })
+        .finally(() => pending.current.delete(p));
     }
-  }, [items, activeKey, cache]);
+  }, [items, activeKey, cache, totalLines]);
 
   if (!session && !activeKey) {
     return (

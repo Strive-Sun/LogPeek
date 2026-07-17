@@ -19,6 +19,15 @@ const pathByName = new Map<string, string>();
 // entryKey("archiveName::entry" | "fileName") → sessionId
 const sessionByKey = new Map<string, string>();
 const totalByKey = new Map<string, number>();
+const latestProgress = new Map<string, IndexProgress>();
+const progressSubscribers = new Map<string, Set<(progress: IndexProgress) => void>>();
+
+// Start listening before any session opens so fast jobs can be replayed to late subscribers.
+const progressListenerReady = listen<IndexProgress>('index-progress', (event) => {
+  const progress = event.payload;
+  latestProgress.set(progress.sessionId, progress);
+  progressSubscribers.get(progress.sessionId)?.forEach((subscriber) => subscriber(progress));
+});
 
 interface RawChild {
   id: string;
@@ -73,6 +82,7 @@ export const tauriApi = {
   },
 
   async openLogSession(entryKey: string): Promise<OpenSessionResult> {
+    await progressListenerReady;
     const [archiveName, entry] = entryKey.includes('::')
       ? entryKey.split('::')
       : [entryKey, entryKey];
@@ -84,18 +94,42 @@ export const tauriApi = {
     });
     sessionByKey.set(entryKey, res.sessionId);
     const total = await invoke<number>('line_count', { sessionId: res.sessionId });
-    totalByKey.set(entryKey, total);
+    totalByKey.set(entryKey, latestProgress.get(res.sessionId)?.indexedLines ?? total);
     return res;
   },
 
   subscribeIndexProgress(
     entryKey: string,
-    _onProgress: (p: IndexProgress) => void,
+    onProgress: (p: IndexProgress) => void,
     onDone: (totalLines: number) => void,
   ): () => void {
-    // 真实后端 open 返回时索引已建好,直接完成
-    onDone(totalByKey.get(entryKey) ?? 0);
-    return () => {};
+    // Dispatch live events, or replay the latest event when indexing finished very quickly.
+    const sessionId = sessionByKey.get(entryKey);
+    if (!sessionId) return () => {};
+    let finished = false;
+    const subscriber = (progress: IndexProgress) => {
+      if (finished) return;
+      totalByKey.set(entryKey, progress.indexedLines);
+      onProgress(progress);
+      if (progress.done) {
+        finished = true;
+        progressSubscribers.get(sessionId)?.delete(subscriber);
+        progressSubscribers.delete(sessionId);
+        latestProgress.delete(sessionId);
+        onDone(progress.indexedLines);
+      }
+    };
+    const subscribers = progressSubscribers.get(sessionId) ?? new Set();
+    subscribers.add(subscriber);
+    progressSubscribers.set(sessionId, subscribers);
+    const latest = latestProgress.get(sessionId);
+    if (latest) subscriber(latest);
+    return () => {
+      finished = true;
+      const subscribers = progressSubscribers.get(sessionId);
+      subscribers?.delete(subscriber);
+      if (subscribers?.size === 0) progressSubscribers.delete(sessionId);
+    };
   },
 
   async readLines(entryKey: string, start: number, count: number): Promise<LogLine[]> {

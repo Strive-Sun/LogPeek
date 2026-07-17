@@ -186,7 +186,13 @@ export const mockApi = {
       percent += 7 + Math.floor(percent / 20);
       if (percent >= 100) {
         percent = 100;
-        onProgress({ sessionId: `sess:${entryKey}`, percent, indexedLines: total });
+        onProgress({
+          sessionId: `sess:${entryKey}`,
+          percent,
+          indexedLines: total,
+          done: true,
+          failed: false,
+        });
         onDone(total);
         if (progressTimer) window.clearInterval(progressTimer);
         return;
@@ -195,6 +201,8 @@ export const mockApi = {
         sessionId: `sess:${entryKey}`,
         percent,
         indexedLines: Math.floor((total * percent) / 100),
+        done: false,
+        failed: false,
       });
     }, 180);
     return () => progressTimer && window.clearInterval(progressTimer);

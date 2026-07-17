@@ -3,7 +3,7 @@ mod index;
 mod watcher;
 
 use archive::{open_archive, ArchiveEntry};
-use index::{LogLine, OpenResult, SessionManager};
+use index::{IndexProgress, LogLine, OpenResult, SessionManager};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -215,6 +215,7 @@ fn list_archive_entries(path: String) -> Result<Vec<ArchiveEntry>, String> {
 #[tauri::command]
 fn open_log_session(
     state: State<AppState>,
+    app: tauri::AppHandle,
     archive_path: String,
     entry_path: String,
 ) -> Result<OpenResult, String> {
@@ -231,7 +232,6 @@ fn open_log_session(
         return Err("该条目不是文本日志,无法查看".into());
     }
     let declared = meta.size;
-    let stream = reader.open_entry(&entry_path).map_err(|e| e.to_string())?;
     let display = if entry_path == archive_path || !archive_path.ends_with(".zip") {
         entry_path.clone()
     } else {
@@ -242,10 +242,29 @@ fn open_log_session(
             .to_string();
         format!("{arc_name} › {entry_path}")
     };
-    state
+    let result = state
         .sessions
-        .open(stream, display, declared)
-        .map_err(|e| e.to_string())
+        .prepare(display, declared)
+        .map_err(|e| e.to_string())?;
+    let session_id = result.session_id.clone();
+    let sessions = state.sessions.clone();
+    std::thread::spawn(move || match reader.open_entry(&entry_path) {
+        Ok(stream) => sessions.index(&session_id, declared, stream, |event| {
+            let _ = app.emit("index-progress", event);
+        }),
+        Err(error) => {
+            let event = IndexProgress {
+                session_id,
+                percent: 100,
+                indexed_lines: 0,
+                done: true,
+                failed: true,
+                error: Some(error.to_string()),
+            };
+            let _ = app.emit("index-progress", event);
+        }
+    });
+    Ok(result)
 }
 
 #[tauri::command]
