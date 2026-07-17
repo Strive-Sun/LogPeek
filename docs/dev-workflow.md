@@ -67,3 +67,16 @@ Codex 审阅通过 Claude Code 官方插件 [openai/codex-plugin-cc](https://git
 - `tauri.conf.json` 不重复声明版本；Tauri 2 会自动使用 Cargo package version。
 - 根目录 npm package 是私有前端工程,不声明发布版本。
 - 修改 `Cargo.toml` 后运行 `cargo check`,由 Cargo 自动同步 `Cargo.lock`,不要手工修改 lockfile。
+
+### 发布步骤
+
+1. 在 `src-tauri/Cargo.toml` 中修改 `[package].version`。
+2. 在 `CHANGELOG.md` 中新增 `## [版本号] - YYYY-MM-DD` 章节。
+3. 按“新增 / 优化 / 修复 / 工程质量”等类别组织内容；没有内容的类别可以省略。
+4. 每项变化单独写一条 `- ` bullet,描述具体的用户可见变化或工程改进；禁止使用“修复若干问题”“待补充”等模糊占位描述。
+5. 将 `Unreleased` 中已完成的条目移动到新版本章节,不要在两个章节重复保留。
+6. 运行 `cargo check` 更新 `Cargo.lock`。
+7. 运行 `npm run release:check`,确认 Cargo 版本、CHANGELOG 版本章节及更新列表一致。
+8. 提交版本变更后创建 `v版本号` tag 并推送。
+
+Release 工作流会再次校验 tag、Cargo 版本与 CHANGELOG 章节一致,并自动把该版本的逐条更新内容写入 GitHub Release Notes；任一项缺失或不一致都会停止发布。

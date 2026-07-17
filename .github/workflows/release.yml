@@ -49,6 +49,10 @@ jobs:
         # 已知 bug(npm/cli#4828),会导致 @tauri-apps/cli 的原生二进制缺失
         run: npm install
 
+      - name: 校验并生成发行说明
+        id: release_notes
+        run: node scripts/release-notes.mjs --github-output
+
       - name: 构建并发布安装包
         uses: tauri-apps/tauri-action@v0
         env:
@@ -56,7 +60,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'LogPeek ${{ github.ref_name }}'
-          releaseBody: '详见下方各平台安装包。安装包体积约 2–3MB(复用系统 WebView)。'
+          releaseBody: ${{ steps.release_notes.outputs.body }}
           # 自动发布(非草稿):Release 跑完即公开,点进 tag/Releases 页面可直接下载安装包
           releaseDraft: false
           prerelease: false
