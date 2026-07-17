@@ -5,6 +5,7 @@ import type {
   AppUpdateInfo,
   AppUpdateProgress,
   ArchiveEntry,
+  DirectoryChangeBatch,
   EncodingProgress,
   IndexProgress,
   LogLine,
@@ -138,6 +139,7 @@ export const mockApi = {
         id: 'dir:downloads',
         name: '下载',
         kind: 'dir',
+        watchRoot: true,
         children: [
           {
             id: 'arc:crash-0715.zip',
@@ -163,6 +165,7 @@ export const mockApi = {
         id: 'dir:backup',
         name: '日志备份',
         kind: 'dir',
+        watchRoot: true,
         children: [
           {
             id: 'arc:device3.zip',
@@ -184,6 +187,12 @@ export const mockApi = {
     const names = ARCHIVE_ENTRIES[archiveName] ?? [];
     return names.map((n) => ENTRY_TABLE[`${archiveName}::${n}`].entry);
   },
+
+  async expandDirectory(_path: string): Promise<TreeNode[]> {
+    return [];
+  },
+
+  async collapseDirectory(_path: string): Promise<void> {},
 
   async newLogItems(): Promise<NewLogItem[]> {
     return [
@@ -336,6 +345,10 @@ export const mockApi = {
   },
 
   subscribeNewLogs(_onDetect: (item: NewLogItem) => void): () => void {
+    return () => {};
+  },
+
+  subscribeDirectoryChanges(_onChange: (batch: DirectoryChangeBatch) => void): () => void {
     return () => {};
   },
 };

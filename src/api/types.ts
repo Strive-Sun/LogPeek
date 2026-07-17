@@ -38,6 +38,8 @@ export interface TreeNode {
   path?: string;
   /** 来源监控目录路径 */
   watchDir?: string;
+  /** 是否为用户配置的监控根目录；普通子目录为 false。 */
+  watchRoot?: boolean;
   /** 是否为未读的新到达项 */
   unread?: boolean;
   /** 子节点;archive 节点在展开时惰性填充 */
@@ -99,6 +101,19 @@ export interface DetectedItem {
   kind: 'archive' | 'file';
   size: number;
   source: string;
+}
+
+/** 后端归一化后的单个目录结构变化。 */
+export type DirectoryChange =
+  | { type: 'upsert'; node: TreeNode }
+  | { type: 'remove'; path: string }
+  | { type: 'rename'; oldPath: string; node: TreeNode }
+  | { type: 'rescan'; nodes: TreeNode[] };
+
+/** 同一监控目录在短时间窗口内合并后的结构变化。 */
+export interface DirectoryChangeBatch {
+  watchDir: string;
+  changes: DirectoryChange[];
 }
 
 /** 后缀筛选规则 */

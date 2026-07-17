@@ -21,6 +21,15 @@ import {
   saveSkippedVersion,
   type UpdateStatus,
 } from './util/update';
+import {
+  applyDirectoryChanges,
+  passesDirectoryFilter,
+  removedDirectoryNodes,
+} from './util/directoryTree';
+
+function flattenNodes(nodes: readonly TreeNode[]): TreeNode[] {
+  return nodes.flatMap((node) => [node, ...flattenNodes(node.children ?? [])]);
+}
 
 export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>('light');
@@ -35,6 +44,7 @@ export function App() {
   const updateTaskRunning = useRef(false);
   const autoCheckStarted = useRef(false);
   const [tree, setTree] = useState<TreeNode[]>([]);
+  const treeRef = useRef<TreeNode[]>([]);
   const [newItems, setNewItems] = useState<NewLogItem[]>([]);
   // 徽章数字直接由未读列表长度派生,保证徽章与列表始终一致
   const count = newItems.length;
@@ -48,6 +58,7 @@ export function App() {
 
   // 当前选中的压缩包(用于左侧树高亮)与当前查看的条目 key
   const [selectedArchive, setSelectedArchive] = useState<string | null>(null);
+  const selectedArchiveRef = useRef<string | null>(null);
   const [session, setSession] = useState<OpenSessionResult | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
 
@@ -188,6 +199,10 @@ export function App() {
     activeKeyRef.current = activeKey;
   }, [activeKey]);
 
+  useEffect(() => {
+    selectedArchiveRef.current = selectedArchive;
+  }, [selectedArchive]);
+
   // 禁用 WebView 默认右键菜单(刷新/打印/检查等,对本应用无意义)
   useEffect(() => {
     const onCtx = (e: MouseEvent) => e.preventDefault();
@@ -195,8 +210,19 @@ export function App() {
     return () => document.removeEventListener('contextmenu', onCtx);
   }, []);
 
+  // 清空当前查看视图，并使任何进行中的打开请求失效。
+  const resetView = useCallback(() => {
+    openSeq.current++;
+    setActiveKey(null);
+    setSession(null);
+    setSelectedArchive(null);
+  }, []);
+
   const refreshTree = useCallback(() => {
-    api.listWatchDirs().then(setTree);
+    api.listWatchDirs().then((nodes) => {
+      treeRef.current = nodes;
+      setTree(nodes);
+    });
   }, []);
 
   useEffect(() => {
@@ -214,23 +240,71 @@ export function App() {
       // 已读过的项不再加回;同一 id 只保留一条,避免重复事件导致计数虚高
       if (seen.current.has(item.id)) return;
       setNewItems((prev) => (prev.some((p) => p.id === item.id) ? prev : [item, ...prev]));
-      refreshTree();
     });
-    return unsub;
-  }, [refreshTree]);
+    const unsubChanges = api.subscribeDirectoryChanges((batch) => {
+      const before = treeRef.current;
+      const after = applyDirectoryChanges(before, batch);
+      treeRef.current = after;
+      setTree(after);
+
+      const removed = removedDirectoryNodes(before, after, batch.watchDir);
+      if (removed.length === 0) return;
+      removed.forEach((node) => {
+        if (node.kind === 'dir') void api.collapseDirectory(node.path ?? node.id);
+      });
+      const removedTree = flattenNodes(removed);
+      const removedIds = new Set(removedTree.map((node) => node.id));
+      setNewItems((items) =>
+        items.filter((item) => {
+          if (!removedIds.has(item.id)) return true;
+          seen.current.add(item.id);
+          return false;
+        }),
+      );
+      const active = activeKeyRef.current;
+      const selected = selectedArchiveRef.current;
+      if (
+        removedTree.some(
+          (node) =>
+            active === node.name ||
+            active === node.id ||
+            active?.startsWith(node.name + '::') ||
+            active?.startsWith(node.id + '::') ||
+            selected === node.id,
+        )
+      ) {
+        resetView();
+      }
+    });
+    return () => {
+      unsub();
+      unsubChanges();
+    };
+  }, [refreshTree, resetView]);
 
   const addDir = useCallback(async () => {
     const ok = await api.addWatchDir();
     if (ok) refreshTree();
   }, [refreshTree]);
 
+  const expandDirectory = useCallback(async (node: TreeNode) => {
+    const path = node.path ?? node.id;
+    const children = await api.expandDirectory(path);
+    const next = applyDirectoryChanges(treeRef.current, {
+      watchDir: path,
+      changes: [{ type: 'rescan', nodes: children }],
+    });
+    treeRef.current = next;
+    setTree(next);
+  }, []);
+
+  const collapseDirectory = useCallback((node: TreeNode) => {
+    void api.collapseDirectory(node.path ?? node.id);
+  }, []);
+
   const passesFilter = useCallback(
     (node: { name: string; kind: string; isLog?: boolean }) => {
-      if (node.kind === 'dir' || node.kind === 'archive') return true;
-      if (showAll) return true;
-      const lower = node.name.toLowerCase();
-      // 后缀也转小写,与后端 should_notify 的大小写不敏感匹配保持一致
-      return filter.some((s) => lower.endsWith(s.toLowerCase()));
+      return passesDirectoryFilter(node, filter, showAll);
     },
     [filter, showAll],
   );
@@ -265,14 +339,6 @@ export function App() {
     [markSeen],
   );
 
-  // 清空当前查看视图,并使任何进行中的打开请求失效(避免其稍后回填过时会话)
-  const resetView = useCallback(() => {
-    openSeq.current++;
-    setActiveKey(null);
-    setSession(null);
-    setSelectedArchive(null);
-  }, []);
-
   const markAllRead = useCallback(() => {
     // 记住已读,避免重复事件把它们重新加回列表
     setNewItems((items) => {
@@ -295,7 +361,10 @@ export function App() {
         const cur = activeKeyRef.current;
         if (
           node.kind !== 'dir' &&
-          (cur === node.name || cur === node.id || cur?.startsWith(node.name + '::'))
+          (cur === node.name ||
+            cur === node.id ||
+            cur?.startsWith(node.name + '::') ||
+            cur?.startsWith(node.id + '::'))
         ) {
           resetView();
         }
@@ -368,7 +437,12 @@ export function App() {
         // 若当前查看的正是被删文件(或被删压缩包内的条目),清空视图。
         // 读取镜像的当前值(await 期间用户可能已切换查看目标)。
         const cur = activeKeyRef.current;
-        if (cur === node.name || cur?.startsWith(node.name + '::')) {
+        if (
+          cur === node.name ||
+          cur === node.id ||
+          cur?.startsWith(node.name + '::') ||
+          cur?.startsWith(node.id + '::')
+        ) {
           resetView();
         }
         markSeen(node.id);
@@ -393,7 +467,7 @@ export function App() {
           const key = it.kind === 'file' ? it.name : `${it.name}::`;
           if (it.kind === 'file') openEntry(it.name, it.id);
           else {
-            setSelectedArchive(it.name);
+            setSelectedArchive(it.id);
             markSeen(it.id);
           }
           void key;
@@ -440,6 +514,8 @@ export function App() {
             void api.setFilter(filter, v);
           }}
           onAddDir={addDir}
+          onExpandDirectory={expandDirectory}
+          onCollapseDirectory={collapseDirectory}
           onSelectArchive={(name, id) => {
             setSelectedArchive(name);
             if (id) markSeen(id);

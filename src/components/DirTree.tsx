@@ -16,9 +16,13 @@ interface Props {
   passesFilter: (n: { name: string; kind: string; isLog?: boolean }) => boolean;
   onFilterChange: (f: string[]) => void;
   onShowAllChange: (v: boolean) => void;
-  onSelectArchive: (name: string, unreadId?: string) => void;
+  onSelectArchive: (id: string, unreadId?: string) => void;
   onOpenFile: (name: string, unreadId?: string) => void;
   onAddDir: () => void;
+  /** 展开目录时按需加载直接子项并开始监听。 */
+  onExpandDirectory: (node: TreeNode) => Promise<void>;
+  /** 折叠目录时释放该目录及后代的按需监听。 */
+  onCollapseDirectory: (node: TreeNode) => void;
   /** 重命名文件/目录;node.kind 决定走文件还是监控目录的重命名 */
   onRename: (node: TreeNode, newName: string) => Promise<void>;
   /** 删除文件(移入回收站);由上层弹确认并刷新 */
@@ -98,18 +102,20 @@ export function DirTree(props: Props) {
           y={menu.y}
           onClose={() => setMenu(null)}
           items={
-            menu.node.kind === 'dir'
+            menu.node.kind === 'dir' && menu.node.watchRoot
               ? [
                   { label: '在资源管理器中打开', onClick: () => props.onOpenPath(menu.node) },
                   { label: '重命名', onClick: () => ctx.startRename(menu.node) },
                   { label: '移除监控(不删除文件)', onClick: () => props.onRemoveWatch(menu.node) },
                   { label: '删除目录', danger: true, onClick: () => props.onDeleteDir(menu.node) },
                 ]
-              : [
-                  { label: '在资源管理器中打开', onClick: () => props.onOpenPath(menu.node) },
-                  { label: '重命名', onClick: () => ctx.startRename(menu.node) },
-                  { label: '删除', danger: true, onClick: () => props.onDelete(menu.node) },
-                ]
+              : menu.node.kind === 'dir'
+                ? [{ label: '在资源管理器中打开', onClick: () => props.onOpenPath(menu.node) }]
+                : [
+                    { label: '在资源管理器中打开', onClick: () => props.onOpenPath(menu.node) },
+                    { label: '重命名', onClick: () => ctx.startRename(menu.node) },
+                    { label: '删除', danger: true, onClick: () => props.onDelete(menu.node) },
+                  ]
           }
         />
       )}
@@ -120,21 +126,40 @@ export function DirTree(props: Props) {
 function TreeItem(props: Props & { node: TreeNode; depth: number }) {
   const { node, depth } = props;
   const tree = useContext(TreeContext);
-  const [open, setOpen] = useState(node.kind === 'dir');
+  const [open, setOpen] = useState(node.watchRoot === true);
   // 压缩包展开时惰性拉取的子条目
   const [entries, setEntries] = useState<ArchiveEntry[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   const pad = { paddingLeft: 10 + depth * 14 };
 
   const toggleArchive = async () => {
     const next = !open;
     setOpen(next);
-    props.onSelectArchive(node.name, props.unreadIds.has(node.id) ? node.id : undefined);
+    props.onSelectArchive(node.id, props.unreadIds.has(node.id) ? node.id : undefined);
     if (next && entries === null) {
       setLoading(true);
-      const es = await api.listArchiveEntries(node.name); // 只读中央目录,不解压
+      const es = await api.listArchiveEntries(node.path ?? node.name); // 只读中央目录,不解压
       setEntries(es);
+      setLoading(false);
+    }
+  };
+
+  const toggleDirectory = async () => {
+    const next = !open;
+    setOpen(next);
+    setLoadError(false);
+    if (!next) {
+      props.onCollapseDirectory(node);
+      return;
+    }
+    setLoading(true);
+    try {
+      await props.onExpandDirectory(node);
+    } catch {
+      setLoadError(true);
+    } finally {
       setLoading(false);
     }
   };
@@ -167,7 +192,7 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
         <div
           className={'tree-node' + (dirHasNew ? ' new-dir' : '')}
           style={pad}
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => void toggleDirectory()}
           onContextMenu={(e) => tree?.openMenu(e, node)}
         >
           <span className="twisty">{open ? '▾' : '▸'}</span>
@@ -175,7 +200,25 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
           {renderLabel()}
         </div>
         {open &&
-          node.children?.map((c) => <TreeItem key={c.id} {...props} node={c} depth={depth + 1} />)}
+          node.children
+            ?.filter(props.passesFilter)
+            .map((c) => <TreeItem key={c.id} {...props} node={c} depth={depth + 1} />)}
+        {open && loading && (
+          <div
+            className="tree-node"
+            style={{ paddingLeft: 10 + (depth + 1) * 14, color: 'var(--fg-dim)' }}
+          >
+            读取目录…
+          </div>
+        )}
+        {open && loadError && (
+          <div
+            className="tree-node"
+            style={{ paddingLeft: 10 + (depth + 1) * 14, color: 'var(--danger)' }}
+          >
+            目录读取失败
+          </div>
+        )}
       </div>
     );
   }
@@ -186,7 +229,7 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
         <div
           className={
             'tree-node' +
-            (props.selectedArchive === node.name ? ' selected' : '') +
+            (props.selectedArchive === node.id ? ' selected' : '') +
             (unread ? ' new-file' : '')
           }
           style={pad}
@@ -210,7 +253,7 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
           entries
             ?.filter((e) => props.passesFilter({ name: e.path, kind: 'file', isLog: e.isLog }))
             .map((e) => {
-              const key = `${node.name}::${e.path}`;
+              const key = `${node.path ?? node.name}::${e.path}`;
               return (
                 <div
                   key={key}
@@ -234,12 +277,10 @@ function TreeItem(props: Props & { node: TreeNode; depth: number }) {
   return (
     <div
       className={
-        'tree-node' +
-        (props.activeKey === node.name ? ' selected' : '') +
-        (unread ? ' new-file' : '')
+        'tree-node' + (props.activeKey === node.id ? ' selected' : '') + (unread ? ' new-file' : '')
       }
       style={pad}
-      onClick={() => props.onOpenFile(node.name, unread ? node.id : undefined)}
+      onClick={() => props.onOpenFile(node.path ?? node.name, unread ? node.id : undefined)}
       onContextMenu={(e) => tree?.openMenu(e, node)}
     >
       <span className="twisty" />

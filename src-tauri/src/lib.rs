@@ -9,7 +9,7 @@ use std::io::SeekFrom;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
-use watcher::{DetectedItem, WatchState};
+use watcher::{DetectedItem, DirectoryChange, DirectoryChangeBatch, WatchState};
 
 struct AppState {
     watch: Arc<WatchState>,
@@ -39,6 +39,19 @@ struct TreeChild {
     unread: bool,
 }
 
+fn tree_child(item: DetectedItem) -> TreeChild {
+    TreeChild {
+        id: item.path.clone(),
+        name: item.name,
+        kind: item.kind,
+        path: item.path,
+        size: item.size,
+        is_log: item.is_log,
+        source: item.source,
+        unread: false,
+    }
+}
+
 // ---- 命令 ----
 
 #[tauri::command]
@@ -55,16 +68,7 @@ fn list_watch_dirs(state: State<AppState>) -> Vec<TreeDir> {
                 .watch
                 .scan_dir(&d)
                 .into_iter()
-                .map(|it| TreeChild {
-                    id: it.path.clone(),
-                    name: it.name,
-                    kind: it.kind,
-                    path: it.path,
-                    size: it.size,
-                    is_log: true,
-                    source: it.source,
-                    unread: false,
-                })
+                .map(tree_child)
                 .collect();
             TreeDir {
                 id: d.clone(),
@@ -84,8 +88,32 @@ fn add_watch_dir(
     path: String,
 ) -> Result<(), String> {
     state.watch.add_dir(&path).map_err(|e| e.to_string())?;
-    spawn_watch(&state.watch, &app, &path);
-    Ok(())
+    spawn_watch(&state.watch, &app, &path)
+}
+
+/// 展开文件夹时按需读取直接子项并建立非递归 watcher。
+#[tauri::command]
+fn expand_directory(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Vec<TreeChild>, String> {
+    if !state.watch.is_allowed_directory(&path) {
+        return Err("目录不在已配置的监控范围内".into());
+    }
+    spawn_watch(&state.watch, &app, &path)?;
+    Ok(state
+        .watch
+        .scan_dir(&path)
+        .into_iter()
+        .map(tree_child)
+        .collect())
+}
+
+/// 折叠文件夹时释放该目录及已展开后代的按需 watcher。
+#[tauri::command]
+fn collapse_directory(state: State<AppState>, path: String) {
+    state.watch.stop_aux_watch_tree(&path);
 }
 
 #[tauri::command]
@@ -191,7 +219,7 @@ fn rename_watch_dir(
         .watch
         .rename_dir(&path, &new_name)
         .map_err(|e| e.to_string())?;
-    spawn_watch(&state.watch, &app, &new_path);
+    spawn_watch(&state.watch, &app, &new_path)?;
     Ok(new_path)
 }
 
@@ -335,16 +363,32 @@ fn close_log_session(state: State<AppState>, session_id: String) {
     state.sessions.close(&session_id);
 }
 
-fn spawn_watch(watch: &Arc<WatchState>, app: &tauri::AppHandle, dir: &str) {
+fn spawn_watch(watch: &Arc<WatchState>, app: &tauri::AppHandle, dir: &str) -> Result<(), String> {
     let app2 = app.clone();
+    let app3 = app.clone();
     let watch2 = watch.clone();
-    let _ = watch.start_watch(dir, move |item: DetectedItem| {
-        // 应用用户配置的后缀筛选:不匹配的新文件不计入通知
-        if !watch2.should_notify(&item) {
-            return;
-        }
-        let _ = app2.emit("new-archive-detected", &item);
-    });
+    watch
+        .start_watch(
+            dir,
+            move |item: DetectedItem| {
+                // 稳定检测可能补全未知后缀文本文件的分类，先更新目录库存。
+                if let Some(parent) = PathBuf::from(&item.path).parent() {
+                    let batch = DirectoryChangeBatch {
+                        watch_dir: parent.to_string_lossy().into_owned(),
+                        changes: vec![DirectoryChange::Upsert { node: item.clone() }],
+                    };
+                    let _ = app2.emit("directory-changed", batch);
+                }
+                // 应用用户配置的后缀筛选:不匹配的新文件不计入通知
+                if watch2.should_notify(&item) {
+                    let _ = app2.emit("new-archive-detected", &item);
+                }
+            },
+            move |batch: DirectoryChangeBatch| {
+                let _ = app3.emit("directory-changed", batch);
+            },
+        )
+        .map_err(|error| error.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -374,7 +418,7 @@ pub fn run() {
 
             // 启动恢复:对已配置目录建立监听
             for dir in watch.list_dirs() {
-                spawn_watch(&watch, app.handle(), &dir);
+                let _ = spawn_watch(&watch, app.handle(), &dir);
             }
 
             app.manage(AppState { watch, sessions });
@@ -382,6 +426,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_watch_dirs,
+            expand_directory,
+            collapse_directory,
             add_watch_dir,
             remove_watch_dir,
             set_filter,

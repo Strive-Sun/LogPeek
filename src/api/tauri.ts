@@ -13,6 +13,7 @@ import type {
   AppUpdateProgress,
   ArchiveEntry,
   DetectedItem,
+  DirectoryChangeBatch,
   EncodingProgress,
   IndexProgress,
   LogLine,
@@ -47,19 +48,45 @@ const encodingListenerReady = listen<EncodingProgress>('encoding-progress', (eve
 interface RawChild {
   id: string;
   name: string;
-  kind: 'archive' | 'file';
+  kind: 'dir' | 'archive' | 'file';
   path: string;
   size: number;
   isLog: boolean;
   source: string;
   unread: boolean;
 }
+type RawDetectedItem = Omit<RawChild, 'id' | 'unread'> & { id?: string; unread?: boolean };
 interface RawDir {
   id: string;
   name: string;
   kind: 'dir';
   path: string;
   children: RawChild[];
+}
+
+type RawDirectoryChange =
+  | { type: 'upsert'; node: RawDetectedItem }
+  | { type: 'remove'; path: string }
+  | { type: 'rename'; oldPath: string; node: RawDetectedItem }
+  | { type: 'rescan'; nodes: RawDetectedItem[] };
+
+interface RawDirectoryChangeBatch {
+  watchDir: string;
+  changes: RawDirectoryChange[];
+}
+
+function treeNode(raw: RawDetectedItem): TreeNode {
+  pathByName.set(raw.name, raw.path);
+  return {
+    id: raw.path,
+    name: raw.name,
+    kind: raw.kind,
+    path: raw.path,
+    size: raw.size,
+    isLog: raw.isLog,
+    watchDir: raw.source,
+    unread: raw.unread ?? false,
+  };
 }
 
 export const tauriApi = {
@@ -139,25 +166,23 @@ export const tauriApi = {
       name: d.name,
       kind: 'dir' as const,
       path: d.path,
-      children: d.children.map((c) => {
-        pathByName.set(c.name, c.path);
-        return {
-          id: c.id,
-          name: c.name,
-          kind: c.kind,
-          path: c.path,
-          size: c.size,
-          isLog: c.isLog,
-          watchDir: d.name,
-          unread: c.unread,
-        };
-      }),
+      watchRoot: true,
+      children: d.children.map((c) => ({ ...treeNode(c), watchDir: d.name })),
     }));
   },
 
   async listArchiveEntries(archiveName: string): Promise<ArchiveEntry[]> {
     const path = pathByName.get(archiveName) ?? archiveName;
     return invoke<ArchiveEntry[]>('list_archive_entries', { path });
+  },
+
+  async expandDirectory(path: string): Promise<TreeNode[]> {
+    const nodes = await invoke<RawChild[]>('expand_directory', { path });
+    return nodes.map(treeNode);
+  },
+
+  async collapseDirectory(path: string): Promise<void> {
+    await invoke('collapse_directory', { path });
   },
 
   async newLogItems(): Promise<NewLogItem[]> {
@@ -169,7 +194,7 @@ export const tauriApi = {
     await progressListenerReady;
     const [archiveName, entry] = entryKey.includes('::')
       ? entryKey.split('::')
-      : [entryKey, entryKey];
+      : [entryKey, entryKey.split(/[/\\]/).pop() ?? entryKey];
     const archivePath = pathByName.get(archiveName) ?? archiveName;
     const entryPath = entry || archiveName;
     const res = await invoke<OpenSessionResult>('open_log_session', {
@@ -322,6 +347,33 @@ export const tauriApi = {
         source: it.source,
         age: 'now',
       });
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  },
+
+  /** 订阅目录结构变化；新日志提示通过独立事件处理。 */
+  subscribeDirectoryChanges(onChange: (batch: DirectoryChangeBatch) => void): () => void {
+    const un = listen<RawDirectoryChangeBatch>('directory-changed', (event) => {
+      const batch = event.payload;
+      const changes = batch.changes.map((change) => {
+        if (change.type === 'upsert') return { ...change, node: treeNode(change.node) };
+        if (change.type === 'rename') {
+          for (const [name, path] of pathByName) {
+            if (path === change.oldPath) pathByName.delete(name);
+          }
+          return { ...change, node: treeNode(change.node) };
+        }
+        if (change.type === 'remove') {
+          for (const [name, path] of pathByName) {
+            if (path === change.path) pathByName.delete(name);
+          }
+          return change;
+        }
+        return { ...change, nodes: change.nodes.map(treeNode) };
+      }) as DirectoryChangeBatch['changes'];
+      onChange({ watchDir: batch.watchDir, changes });
     });
     return () => {
       un.then((f) => f());

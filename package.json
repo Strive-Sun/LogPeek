@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "test": "tsx --test src/util/update.test.ts",
+    "test": "tsx --test src/util/*.test.ts",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.{js,mjs}\" \"*.{json,js,ts,html}\" \".github/workflows/*.yml\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.{js,mjs}\" \"*.{json,js,ts,html}\" \".github/workflows/*.yml\"",
