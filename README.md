@@ -48,8 +48,6 @@
   </picture>
 </p>
 
-> LogCrate was previously named LogPeek. The repository now lives at `Strive-Sun/LogCrate`; legacy repository and updater URLs redirect here so existing installations can continue to upgrade.
-
 ---
 
 ## Why LogCrate

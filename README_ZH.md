@@ -48,8 +48,6 @@
   </picture>
 </p>
 
-> LogCrate 原名 LogPeek，仓库现已迁移到 `Strive-Sun/LogCrate`；旧仓库和 updater 地址会重定向到这里，确保已安装版本可以继续升级。
-
 ---
 
 ## 为什么是 LogCrate
