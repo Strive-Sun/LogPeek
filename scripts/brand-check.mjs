@@ -5,6 +5,10 @@ import { inflateSync } from 'node:zlib';
 const root = path.resolve(import.meta.dirname, '..');
 const read = (file) => readFile(path.join(root, file), 'utf8');
 const readBinary = (file) => readFile(path.join(root, file));
+const canonicalRepository = 'https://github.com/Strive-Sun/LogCrate';
+const canonicalUpdaterEndpoint = `${canonicalRepository}/releases/latest/download/latest.json`;
+const expectedUpdaterPublicKey =
+  'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERENDUwNDlCNzE0OEI3RjYKUldUMnQwaHhtd1JGM2NObzJSVE9nRFA0d0JMdk9nSVIrOGR2TVpGeHY5ZW5ZeUwzQmpIS1dWQ3UK';
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
@@ -78,14 +82,13 @@ assert(config.productName === 'LogCrate', 'Tauri productName must be LogCrate');
 assert(config.app.windows[0].title === 'LogCrate', 'Main window title must be LogCrate');
 assert(config.identifier === 'com.logpeek.app', 'Legacy bundle identifier must not change');
 assert(
-  config.plugins.updater.endpoints.includes(
-    'https://github.com/Strive-Sun/LogPeek/releases/latest/download/latest.json',
-  ),
-  'Legacy updater endpoint must remain available during the rename',
+  config.plugins.updater.endpoints.length === 1 &&
+    config.plugins.updater.endpoints[0] === canonicalUpdaterEndpoint,
+  'New builds must use the canonical LogCrate updater endpoint',
 );
 assert(
-  config.plugins.updater.pubkey?.length > 40,
-  'Updater signing public key must remain configured',
+  config.plugins.updater.pubkey === expectedUpdaterPublicKey,
+  'Updater signing public key must not change during repository migration',
 );
 for (const icon of [
   'icons/32x32.png',
@@ -98,16 +101,33 @@ for (const icon of [
   assert(config.bundle.icon.includes(icon), `Tauri bundle must reference ${icon}`);
 }
 
-const [app, locale, update, readme] = await Promise.all([
+const [app, locale, update, readme, readmeZh] = await Promise.all([
   read('src/App.tsx'),
   read('src/i18n/core.ts'),
   read('src/util/update.ts'),
   read('README.md'),
+  read('README_ZH.md'),
 ]);
 assert(app.includes("'logpeek.treeWidth'"), 'Legacy tree width key must remain readable');
 assert(locale.includes("'logpeek.locale'"), 'Legacy locale key must remain readable');
 assert(update.includes("'logpeek.update.autoCheck'"), 'Legacy update setting must remain readable');
-assert(readme.includes('<h1 align="center">LogCrate</h1>'), 'README must use LogCrate branding');
+for (const [name, contents] of [
+  ['README.md', readme],
+  ['README_ZH.md', readmeZh],
+]) {
+  assert(
+    contents.includes('<h1 align="center">LogCrate</h1>'),
+    `${name} must use LogCrate branding`,
+  );
+  assert(
+    contents.includes(canonicalRepository),
+    `${name} must link to the canonical LogCrate repository`,
+  );
+  assert(
+    !contents.includes('https://github.com/Strive-Sun/LogPeek'),
+    `${name} must not link to the legacy repository`,
+  );
+}
 
 for (const icon of [
   'src-tauri/icons/logcrate.svg',
@@ -141,4 +161,4 @@ for (const [icon, expectedSize] of [
   );
 }
 
-console.log('Brand compatibility check passed: LogCrate display identity + LogPeek upgrade keys.');
+console.log('Brand compatibility check passed: LogCrate repository + legacy upgrade identity.');

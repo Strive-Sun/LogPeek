@@ -105,12 +105,17 @@ TBD - created by archiving change add-settings-update-check. Update Purpose afte
 
 ### Requirement: 正式版本与签名发布
 
-系统 SHALL 仅通过固定的官方 GitHub Releases updater endpoint 获取最新正式版本；品牌从 LogPeek 迁移为 LogCrate 的兼容期 MAY 继续使用旧仓库路径。Release 流程 MUST 为 Windows 与 macOS 更新包生成签名和更新清单，且签名私钥 MUST NOT 存储在仓库或应用包内。
+系统 SHALL 仅通过固定的官方 LogCrate GitHub Releases updater endpoint 获取最新正式版本。新构建 MUST 使用 `Strive-Sun/LogCrate` 规范路径；已发布旧客户端 MAY 通过 GitHub 对 `Strive-Sun/LogPeek` 的永久重定向访问同一更新源。Release 流程 MUST 为 Windows 与 macOS 更新包生成签名和更新清单，且签名私钥 MUST NOT 存储在仓库或应用包内。
 
 #### Scenario: 正式版本可更新
 
 - **WHEN** `vX.Y.Z` 正式 tag 的 Release workflow 成功完成
-- **THEN** Release 同时包含 updater 清单、签名以及 Windows/macOS 可安装更新包，并使用当前 LogCrate 品牌展示
+- **THEN** LogCrate 仓库的 Release 同时包含 updater 清单、签名以及 Windows/macOS 可安装更新包，并使用当前 LogCrate 品牌展示
+
+#### Scenario: 旧客户端访问更新
+
+- **WHEN** 已发布客户端请求旧 LogPeek updater endpoint
+- **THEN** GitHub 将请求永久重定向到 LogCrate 仓库，客户端最终获取由原有公钥信任的签名更新
 
 #### Scenario: 签名配置缺失
 

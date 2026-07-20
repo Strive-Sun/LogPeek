@@ -18,19 +18,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Strive-Sun/LogPeek/releases/latest"><img src="https://img.shields.io/github/v/release/Strive-Sun/LogPeek?style=flat-square&label=release" alt="Latest release"></a>
-  <a href="https://github.com/Strive-Sun/LogPeek/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Strive-Sun/LogPeek/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://github.com/Strive-Sun/LogCrate/releases/latest"><img src="https://img.shields.io/github/v/release/Strive-Sun/LogCrate?style=flat-square&label=release" alt="Latest release"></a>
+  <a href="https://github.com/Strive-Sun/LogCrate/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Strive-Sun/LogCrate/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-4a9eff?style=flat-square" alt="Windows and macOS">
   <img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db?style=flat-square" alt="Built with Tauri 2">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Strive-Sun/LogPeek/releases/latest"><strong>Download the latest release</strong></a>
+  <a href="https://github.com/Strive-Sun/LogCrate/releases/latest"><strong>Download the latest release</strong></a>
   · <a href="CHANGELOG.md">Changelog</a>
   · <a href="docs/technical-design.md">Technical design</a>
 </p>
 
-> LogCrate was previously named LogPeek. The existing GitHub repository and update endpoint are retained for upgrade compatibility.
+> LogCrate was previously named LogPeek. The repository now lives at `Strive-Sun/LogCrate`; legacy repository and updater URLs redirect here so existing installations can continue to upgrade.
 
 ---
 
@@ -78,7 +78,7 @@ flowchart LR
 
 ### 1. Install
 
-Open [GitHub Releases](https://github.com/Strive-Sun/LogPeek/releases/latest) and download the installer for your system:
+Open [GitHub Releases](https://github.com/Strive-Sun/LogCrate/releases/latest) and download the installer for your system:
 
 - **Windows** — prefer `setup.exe`; an `.msi` package is also available.
 - **macOS** — download the `.dmg`; releases are built as universal binaries.

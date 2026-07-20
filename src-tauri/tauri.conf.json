@@ -32,7 +32,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERENDUwNDlCNzE0OEI3RjYKUldUMnQwaHhtd1JGM2NObzJSVE9nRFA0d0JMdk9nSVIrOGR2TVpGeHY5ZW5ZeUwzQmpIS1dWQ3UK",
-      "endpoints": ["https://github.com/Strive-Sun/LogPeek/releases/latest/download/latest.json"],
+      "endpoints": ["https://github.com/Strive-Sun/LogCrate/releases/latest/download/latest.json"],
       "windows": {
         "installMode": "passive"
       }

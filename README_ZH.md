@@ -18,19 +18,19 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Strive-Sun/LogPeek/releases/latest"><img src="https://img.shields.io/github/v/release/Strive-Sun/LogPeek?style=flat-square&label=release" alt="Latest release"></a>
-  <a href="https://github.com/Strive-Sun/LogPeek/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Strive-Sun/LogPeek/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://github.com/Strive-Sun/LogCrate/releases/latest"><img src="https://img.shields.io/github/v/release/Strive-Sun/LogCrate?style=flat-square&label=release" alt="Latest release"></a>
+  <a href="https://github.com/Strive-Sun/LogCrate/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Strive-Sun/LogCrate/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-4a9eff?style=flat-square" alt="Windows and macOS">
   <img src="https://img.shields.io/badge/built%20with-Tauri%202-24c8db?style=flat-square" alt="Built with Tauri 2">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Strive-Sun/LogPeek/releases/latest"><strong>下载最新版</strong></a>
+  <a href="https://github.com/Strive-Sun/LogCrate/releases/latest"><strong>下载最新版</strong></a>
   · <a href="CHANGELOG.md">更新日志</a>
   · <a href="docs/technical-design.md">技术设计</a>
 </p>
 
-> LogCrate 原名 LogPeek。现有 GitHub 仓库与更新地址暂时保留，以确保已安装版本可以兼容升级。
+> LogCrate 原名 LogPeek，仓库现已迁移到 `Strive-Sun/LogCrate`；旧仓库和 updater 地址会重定向到这里，确保已安装版本可以继续升级。
 
 ---
 
@@ -78,7 +78,7 @@ flowchart LR
 
 ### 1. 安装
 
-进入 [GitHub Releases](https://github.com/Strive-Sun/LogPeek/releases/latest)，下载与你系统匹配的安装包：
+进入 [GitHub Releases](https://github.com/Strive-Sun/LogCrate/releases/latest)，下载与你系统匹配的安装包：
 
 - **Windows**：优先选择 `setup.exe`，也可以使用 `.msi`。
 - **macOS**：下载 `.dmg` 安装包；Release 提供通用架构构建。
