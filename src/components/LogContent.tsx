@@ -205,7 +205,11 @@ export function LogContent({ session, activeKey, status = 'ready', error }: Prop
     <div className="col log-content-panel">
       {indexing && (
         <div className="index-bar">
-          <span>{t('log.indexing', { percent })}</span>
+          <span>
+            {t(activeKey?.includes('::') ? 'log.extractingAndIndexing' : 'log.indexing', {
+              percent,
+            })}
+          </span>
           <div className="track">
             <div className="fill" style={{ width: `${percent}%` }} />
           </div>

@@ -7,6 +7,7 @@ import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
+import { IndexProgressStore } from '../util/indexProgress';
 import { downloadPercent, updateFailureMessage } from '../util/update';
 import type {
   AppUpdateInfo,
@@ -28,8 +29,7 @@ const pathByName = new Map<string, string>();
 // entryKey("archiveName::entry" | "fileName") → sessionId
 const sessionByKey = new Map<string, string>();
 const totalByKey = new Map<string, number>();
-const latestProgress = new Map<string, IndexProgress>();
-const progressSubscribers = new Map<string, Set<(progress: IndexProgress) => void>>();
+const indexProgress = new IndexProgressStore();
 const latestEncodingProgress = new Map<string, EncodingProgress>();
 const encodingSubscribers = new Map<string, Set<(progress: EncodingProgress) => void>>();
 let pendingUpdate: Update | null = null;
@@ -37,9 +37,7 @@ let sessionOpenQueue: Promise<void> = Promise.resolve();
 
 // Start listening before any session opens so fast jobs can be replayed to late subscribers.
 const progressListenerReady = listen<IndexProgress>('index-progress', (event) => {
-  const progress = event.payload;
-  latestProgress.set(progress.sessionId, progress);
-  progressSubscribers.get(progress.sessionId)?.forEach((subscriber) => subscriber(progress));
+  indexProgress.publish(event.payload);
 });
 const encodingListenerReady = listen<EncodingProgress>('encoding-progress', (event) => {
   const progress = event.payload;
@@ -219,14 +217,13 @@ export const tauriApi = {
           sessionByKey.delete(key);
           totalByKey.delete(key);
         }
-        progressSubscribers.delete(evictedSessionId);
-        latestProgress.delete(evictedSessionId);
+        indexProgress.clear(evictedSessionId);
         encodingSubscribers.delete(evictedSessionId);
         latestEncodingProgress.delete(evictedSessionId);
       }
       sessionByKey.set(entryKey, res.sessionId);
       const total = await invoke<number>('line_count', { sessionId: res.sessionId });
-      totalByKey.set(entryKey, latestProgress.get(res.sessionId)?.indexedLines ?? total);
+      totalByKey.set(entryKey, indexProgress.getLatest(res.sessionId)?.indexedLines ?? total);
       return res;
     } finally {
       releaseQueue();
@@ -241,8 +238,7 @@ export const tauriApi = {
       totalByKey.delete(entryKey);
     }
     if (!sessionId) return;
-    progressSubscribers.delete(sessionId);
-    latestProgress.delete(sessionId);
+    indexProgress.clear(sessionId);
     encodingSubscribers.delete(sessionId);
     latestEncodingProgress.delete(sessionId);
     await invoke('close_log_session', { sessionId });
@@ -257,28 +253,20 @@ export const tauriApi = {
     const sessionId = sessionByKey.get(entryKey);
     if (!sessionId) return () => {};
     let finished = false;
-    const subscriber = (progress: IndexProgress) => {
-      if (finished) return;
+    const unsubscribe = indexProgress.subscribe(sessionId, (progress) => {
+      if (finished) return false;
       totalByKey.set(entryKey, progress.indexedLines);
       onProgress(progress);
       if (progress.done) {
         finished = true;
-        progressSubscribers.get(sessionId)?.delete(subscriber);
-        progressSubscribers.delete(sessionId);
-        latestProgress.delete(sessionId);
         onDone(progress.indexedLines);
+        return false;
       }
-    };
-    const subscribers = progressSubscribers.get(sessionId) ?? new Set();
-    subscribers.add(subscriber);
-    progressSubscribers.set(sessionId, subscribers);
-    const latest = latestProgress.get(sessionId);
-    if (latest) subscriber(latest);
+      return true;
+    });
     return () => {
       finished = true;
-      const subscribers = progressSubscribers.get(sessionId);
-      subscribers?.delete(subscriber);
-      if (subscribers?.size === 0) progressSubscribers.delete(sessionId);
+      unsubscribe();
     };
   },
 
