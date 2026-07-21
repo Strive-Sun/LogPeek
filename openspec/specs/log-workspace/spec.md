@@ -1,5 +1,8 @@
-## ADDED Requirements
+# log-workspace Specification
 
+## Purpose
+TBD - created by archiving change add-workspace-restoration. Update Purpose after archive.
+## Requirements
 ### Requirement: 应用必须恢复已打开日志工作区
 
 应用 MUST 持久化已打开选项卡、显示/折叠顺序和活动项，并在下次启动时恢复；运行时会话 ID 与正文缓存 MUST NOT 持久化。
@@ -44,14 +47,14 @@
 
 ### Requirement: 外部删除必须允许另存当前缓存
 
-应用 MUST 在已打开选项卡的磁盘源被外部删除时提示删除事实；当前选项卡存在会话缓存时 MUST 允许用户将其另存为新文件，但 MUST NOT 写回已经删除的源路径。
+应用 MUST 在已打开选项卡的磁盘源被外部删除时提示删除事实；受影响源存在会话缓存时 MUST 允许用户将当前活动条目（若属于该源）或该源下首个可用条目另存为新文件，但 MUST NOT 写回已经删除的源路径。
 
 #### Scenario: 阅读已删除文件的缓存快照
 
 - **WHEN** 已打开文件在应用运行期间被外部删除
 - **THEN** 应用提示该文件已被删除
 - **AND** 已建立的只读缓存保持可读直到用户关闭选项卡或退出应用
-- **AND** 用户可以选择“不保存”或通过系统保存窗口“另存为”当前缓存
+- **AND** 用户可以选择“不保存”或通过系统保存窗口“另存为”所选会话缓存
 - **AND** 对应选项卡不写入下次工作区快照
 
 #### Scenario: watcher 未直接上报删除
@@ -71,3 +74,4 @@
 - **WHEN** 被删除的源是归档且当前选项卡对应归档内日志条目
 - **THEN** 应用另存解压后的日志条目内容
 - **AND** 不创建或重建原归档
+

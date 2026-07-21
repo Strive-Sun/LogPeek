@@ -178,7 +178,7 @@ When a new supported archive or matching log appears under a watched folder, the
 
 ### Current boundaries
 
-- Read-only preview; no editing or saving of log content.
+- Read-only preview; source files are never edited. A cached snapshot may be exported after its source is deleted.
 - One path per drag-and-drop operation.
 - No archive creation, modification, entry deletion, or repacking.
 - Password-protected and multi-volume 7z/RAR archives are detected but not opened yet.
