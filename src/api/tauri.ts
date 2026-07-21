@@ -217,11 +217,9 @@ export const tauriApi = {
       const root = segments[0];
       const sourcePath = resolveOuterSourcePath(root);
       const archivePath =
-        segments.length > 1
-          ? [sourcePath, ...segments.slice(1, -1)].join('::')
-          : sourcePath;
+        segments.length > 1 ? [sourcePath, ...segments.slice(1, -1)].join('::') : sourcePath;
       const entryPath =
-        segments.length > 1 ? segments[segments.length - 1] : root.split(/[/\\]/).pop() ?? root;
+        segments.length > 1 ? segments[segments.length - 1] : (root.split(/[/\\]/).pop() ?? root);
       const res = await invoke<OpenSessionResult>('open_log_session', {
         archivePath,
         entryPath,

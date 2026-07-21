@@ -47,7 +47,12 @@ test('workspace rejects corrupt data and filters duplicate or non-restorable tab
 
   saveWorkspace(
     storage,
-    { visible: ['keep.log', 'gone.log', 'keep.log'], overflow: ['other.log'], active: 'gone.log', capacity: 4 },
+    {
+      visible: ['keep.log', 'gone.log', 'keep.log'],
+      overflow: ['other.log'],
+      active: 'gone.log',
+      capacity: 4,
+    },
     (id) => id !== 'gone.log',
   );
   assert.deepEqual(loadWorkspace(storage), {

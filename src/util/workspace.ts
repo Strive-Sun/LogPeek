@@ -71,7 +71,10 @@ export function loadWorkspace(storage: StorageLike, capacity = 4): TabLayout {
     };
     const visible = collect(parsed.visible);
     const overflow = collect(parsed.overflow);
-    const active = validKey(parsed.active) && seen.has(parsed.active) ? parsed.active : visible[0] ?? overflow[0] ?? null;
+    const active =
+      validKey(parsed.active) && seen.has(parsed.active)
+        ? parsed.active
+        : (visible[0] ?? overflow[0] ?? null);
     return { visible, overflow, active, capacity: Math.max(1, capacity) };
   } catch {
     return { visible: [], overflow: [], active: null, capacity: Math.max(1, capacity) };
@@ -87,7 +90,12 @@ export function saveWorkspace(
     const seen = new Set<string>();
     const filter = (values: readonly string[]) =>
       values.filter((value) => {
-        if (!validKey(value) || seen.has(value) || seen.size >= MAX_WORKSPACE_TABS || !canRestore(value)) {
+        if (
+          !validKey(value) ||
+          seen.has(value) ||
+          seen.size >= MAX_WORKSPACE_TABS ||
+          !canRestore(value)
+        ) {
           return false;
         }
         seen.add(value);
@@ -95,7 +103,10 @@ export function saveWorkspace(
       });
     const visible = filter(layout.visible);
     const overflow = filter(layout.overflow);
-    const active = layout.active && seen.has(layout.active) ? layout.active : visible[0] ?? overflow[0] ?? null;
+    const active =
+      layout.active && seen.has(layout.active)
+        ? layout.active
+        : (visible[0] ?? overflow[0] ?? null);
     storage.setItem(
       WORKSPACE_STORAGE_KEY,
       JSON.stringify({ version: WORKSPACE_VERSION, visible, overflow, active }),
@@ -108,8 +119,9 @@ export function saveWorkspace(
 export function removeWorkspaceTabs(layout: TabLayout, removedIds: ReadonlySet<string>): TabLayout {
   const visible = layout.visible.filter((id) => !removedIds.has(id));
   const overflow = layout.overflow.filter((id) => !removedIds.has(id));
-  const active = layout.active && !removedIds.has(layout.active)
-    ? layout.active
-    : visible[0] ?? overflow[0] ?? null;
+  const active =
+    layout.active && !removedIds.has(layout.active)
+      ? layout.active
+      : (visible[0] ?? overflow[0] ?? null);
   return { ...layout, visible, overflow, active };
 }

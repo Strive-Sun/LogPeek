@@ -65,14 +65,18 @@ export const en = {
   'workspace.keepSnapshot': 'Keep current content',
   'workspace.reload': 'Reload',
   'workspace.deletedTitle': 'File deleted',
-  'workspace.deletedMessage': '“{name}” was deleted. Any content already loaded remains available as a read-only snapshot until you close its tab or exit LogCrate.',
-  'workspace.deletedSaveMessage': '“{name}” was deleted. Save the content currently cached in this tab to a new local file?',
-  'workspace.deletedWhileClosed': '“{name}” was deleted while LogCrate was closed and was not restored.',
+  'workspace.deletedMessage':
+    '“{name}” was deleted. Any content already loaded remains available as a read-only snapshot until you close its tab or exit LogCrate.',
+  'workspace.deletedSaveMessage':
+    '“{name}” was deleted. Save the content currently cached in this tab to a new local file?',
+  'workspace.deletedWhileClosed':
+    '“{name}” was deleted while LogCrate was closed and was not restored.',
   'workspace.doNotSave': 'Do not save',
   'workspace.saveSnapshot': 'Save as',
   'workspace.saveDialogTitle': 'Save cached log snapshot',
   'workspace.snapshotSaved': 'The cached log snapshot was saved.',
-  'workspace.partialSnapshotSaved': 'The indexing was not complete. Only the content cached so far was saved.',
+  'workspace.partialSnapshotSaved':
+    'The indexing was not complete. Only the content cached so far was saved.',
   'workspace.snapshotSaveFailed': 'Could not save the cached log snapshot: {error}',
   'tabs.more': 'More ({count}) ▾',
   'log.choose': 'Select a log entry from the left to view its content',
@@ -208,8 +212,10 @@ export const zhCN: MessageDictionary = {
   'workspace.keepSnapshot': '保持当前内容',
   'workspace.reload': '重新加载',
   'workspace.deletedTitle': '文件已删除',
-  'workspace.deletedMessage': '“{name}”已被删除。已经加载的内容仍可作为只读缓存继续查看，直到关闭对应选项卡或退出 LogCrate。',
-  'workspace.deletedSaveMessage': '“{name}”已被删除，是否将当前选项卡已经缓存的内容另存为新的本地文件？',
+  'workspace.deletedMessage':
+    '“{name}”已被删除。已经加载的内容仍可作为只读缓存继续查看，直到关闭对应选项卡或退出 LogCrate。',
+  'workspace.deletedSaveMessage':
+    '“{name}”已被删除，是否将当前选项卡已经缓存的内容另存为新的本地文件？',
   'workspace.deletedWhileClosed': '“{name}”在 LogCrate 关闭期间已被删除，因此未恢复对应选项卡。',
   'workspace.doNotSave': '不保存',
   'workspace.saveSnapshot': '另存为',
