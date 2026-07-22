@@ -78,7 +78,11 @@ impl RarPath {
             #[cfg(any(target_os = "linux", target_os = "netbsd"))]
             Self::Narrow(path) => unrar_sys::OpenArchiveDataEx::new(path.as_ptr(), mode),
             #[cfg(not(any(target_os = "linux", target_os = "netbsd")))]
-            Self::Wide(path) => unrar_sys::OpenArchiveDataEx::new(path.as_ptr(), mode),
+            // WideCString uses the platform wchar width, but its Unix code units are
+            // unsigned while libc::wchar_t (and therefore UnRAR's WCHAR) is signed.
+            Self::Wide(path) => {
+                unrar_sys::OpenArchiveDataEx::new(path.as_ptr().cast::<unrar_sys::WCHAR>(), mode)
+            }
         }
     }
 }
