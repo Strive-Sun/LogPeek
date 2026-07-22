@@ -53,7 +53,19 @@ export function resizeTabs(layout: TabLayout, requestedCapacity: number): TabLay
   while (visible.length < capacity && overflow.length > 0) {
     visible.push(overflow.shift()!);
   }
+  // 布局与容量均未变化时返回原对象,保持引用稳定,避免触发无谓的重渲染循环
+  if (
+    layout.capacity === capacity &&
+    sameOrder(layout.visible, visible) &&
+    sameOrder(layout.overflow, overflow)
+  ) {
+    return layout;
+  }
   return { ...layout, capacity, visible, overflow };
+}
+
+function sameOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 export function closeTab(layout: TabLayout, id: string): TabLayout {

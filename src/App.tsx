@@ -184,6 +184,12 @@ export function App() {
     [],
   );
 
+  // 引用稳定,避免 LogTabs 的 ResizeObserver effect 因回调变化而反复重跑
+  const handleCapacityChange = useCallback(
+    (capacity: number) => updateTabLayout((layout) => resizeTabs(layout, capacity)),
+    [updateTabLayout],
+  );
+
   // 后缀筛选
   const [filter, setFilter] = useState<string[]>(['.log', '.txt', '.out']);
   const [showAll, setShowAll] = useState(false);
@@ -1232,9 +1238,7 @@ export function App() {
               activeId={activeKey}
               onActivate={activateLogTab}
               onClose={closeLogTab}
-              onCapacityChange={(capacity) =>
-                updateTabLayout((layout) => resizeTabs(layout, capacity))
-              }
+              onCapacityChange={handleCapacityChange}
             />
             <div className="log-panels">
               {tabIds(tabLayout).length === 0 ? (

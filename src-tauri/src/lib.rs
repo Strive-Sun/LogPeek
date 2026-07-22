@@ -2,6 +2,8 @@ mod archive;
 mod index;
 #[cfg(all(test, windows))]
 mod performance;
+#[cfg(desktop)]
+mod startup;
 mod watcher;
 
 use archive::{open_archive, resolve_archive_chain, ArchiveEntry};
@@ -9,15 +11,21 @@ use index::{IndexProgress, LogLine, OpenResult, SessionManager, SnapshotExportRe
 use serde::Serialize;
 use std::io::SeekFrom;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{Emitter, Manager, State};
+use tokio::sync::Notify;
 use watcher::{DetectedItem, DirectoryChange, DirectoryChangeBatch, DroppedFileInfo, WatchState};
 
+#[cfg(desktop)]
+use startup::StartupRenderer;
 use tauri::menu::MenuItem;
 #[cfg(desktop)]
 use tauri::{
     menu::Menu,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::{PageLoadEvent, WebviewBuilder},
+    window::WindowBuilder,
+    PhysicalPosition, PhysicalSize,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -56,19 +64,70 @@ fn tray_click_action(is_left_button: bool, is_released: bool) -> LifecycleAction
     }
 }
 
-fn prepare_archive_cache(path: &std::path::Path) -> std::io::Result<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+fn create_archive_cache(cache_root: &std::path::Path) -> PathBuf {
+    let archive_root = cache_root.join("nested-archives");
+    let current = archive_root.join(format!("run-{}", std::process::id()));
+    if std::fs::create_dir_all(&current).is_ok() {
+        return current;
     }
-    std::fs::create_dir_all(path)
+    let fallback = std::env::temp_dir().join(format!("logcrate-nested-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&fallback);
+    fallback
 }
 
-struct AppState {
+fn cleanup_stale_archive_caches(root: &std::path::Path, current: &std::path::Path) {
+    if current.parent() != Some(root) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == current {
+            continue;
+        }
+        if path.is_dir() {
+            // 其它实例可能仍在使用自己的 run 目录；只移除空目录，不递归删除。
+            let _ = std::fs::remove_dir(path);
+        } else {
+            // 旧版本直接写在 nested-archives 根目录中的文件在启动后不再被使用。
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+struct ReadyAppState {
     watch: Arc<WatchState>,
     sessions: Arc<SessionManager>,
     archive_cache: PathBuf,
+}
+
+#[derive(Clone, Default)]
+struct AppState {
+    ready: Arc<OnceLock<ReadyAppState>>,
+    ready_notify: Arc<Notify>,
+}
+
+impl AppState {
+    fn publish(&self, ready: ReadyAppState) {
+        if self.ready.set(ready).is_ok() {
+            self.ready_notify.notify_waiters();
+        }
+    }
+
+    async fn ready(&self) -> &ReadyAppState {
+        loop {
+            if let Some(ready) = self.ready.get() {
+                return ready;
+            }
+            let notified = self.ready_notify.notified();
+            if let Some(ready) = self.ready.get() {
+                return ready;
+            }
+            notified.await;
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -80,7 +139,7 @@ struct FileRevision {
 }
 
 #[tauri::command]
-fn file_revision(path: String) -> Result<FileRevision, String> {
+async fn file_revision(path: String) -> Result<FileRevision, String> {
     match std::fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => {
             let modified = metadata
@@ -174,9 +233,11 @@ fn tree_child(item: DetectedItem) -> TreeChild {
 // ---- 命令 ----
 
 #[tauri::command]
-fn list_watch_dirs(state: State<AppState>) -> Vec<TreeDir> {
+async fn list_watch_dirs(state: State<'_, AppState>) -> Result<Vec<TreeDir>, String> {
+    let state = state.ready().await;
     let dirs = state.watch.list_dirs();
-    dirs.into_iter()
+    Ok(dirs
+        .into_iter()
         .map(|d| {
             let name = PathBuf::from(&d)
                 .file_name()
@@ -197,15 +258,16 @@ fn list_watch_dirs(state: State<AppState>) -> Vec<TreeDir> {
                 children,
             }
         })
-        .collect()
+        .collect())
 }
 
 #[tauri::command]
-fn add_watch_dir(
-    state: State<AppState>,
+async fn add_watch_dir(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     path: String,
 ) -> Result<(), String> {
+    let state = state.ready().await;
     let added = state.watch.add_dir(&path).map_err(|e| e.to_string())?;
     if added {
         spawn_watch(&state.watch, &app, &path)
@@ -215,7 +277,11 @@ fn add_watch_dir(
 }
 
 #[tauri::command]
-fn inspect_dropped_file(state: State<AppState>, path: String) -> Result<DroppedFileInfo, String> {
+async fn inspect_dropped_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<DroppedFileInfo, String> {
+    let state = state.ready().await;
     state
         .watch
         .inspect_dropped_file(&path)
@@ -224,11 +290,12 @@ fn inspect_dropped_file(state: State<AppState>, path: String) -> Result<DroppedF
 
 /// 展开文件夹时按需读取直接子项并建立非递归 watcher。
 #[tauri::command]
-fn expand_directory(
-    state: State<AppState>,
+async fn expand_directory(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     path: String,
 ) -> Result<Vec<TreeChild>, String> {
+    let state = state.ready().await;
     if !state.watch.is_allowed_directory(&path) {
         return Err("目录不在已配置的监控范围内".into());
     }
@@ -243,29 +310,40 @@ fn expand_directory(
 
 /// 折叠文件夹时释放该目录及已展开后代的按需 watcher。
 #[tauri::command]
-fn collapse_directory(state: State<AppState>, path: String) {
+async fn collapse_directory(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let state = state.ready().await;
     state.watch.stop_aux_watch_tree(&path);
+    Ok(())
 }
 
 #[tauri::command]
-fn remove_watch_dir(state: State<AppState>, path: String) {
+async fn remove_watch_dir(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let state = state.ready().await;
     state.watch.remove_dir(&path);
+    Ok(())
 }
 
 #[tauri::command]
-fn set_filter(state: State<AppState>, suffixes: Vec<String>, show_all: bool) {
+async fn set_filter(
+    state: State<'_, AppState>,
+    suffixes: Vec<String>,
+    show_all: bool,
+) -> Result<(), String> {
+    let state = state.ready().await;
     state.watch.set_filter(suffixes, show_all);
+    Ok(())
 }
 
 /// 返回当前持久化的后缀筛选配置,供前端启动时同步,避免前后端筛选分叉。
 #[tauri::command]
-fn get_filter(state: State<AppState>) -> (Vec<String>, bool) {
-    state.watch.get_filter()
+async fn get_filter(state: State<'_, AppState>) -> Result<(Vec<String>, bool), String> {
+    let state = state.ready().await;
+    Ok(state.watch.get_filter())
 }
 
 /// 重命名文件:仅改文件名,保持在同一目录内;拒绝路径穿越与覆盖已存在文件。
 #[tauri::command]
-fn rename_file(path: String, new_name: String) -> Result<String, String> {
+async fn rename_file(path: String, new_name: String) -> Result<String, String> {
     let src = PathBuf::from(&path);
     if !src.is_file() {
         return Err("文件不存在".into());
@@ -289,7 +367,7 @@ fn rename_file(path: String, new_name: String) -> Result<String, String> {
 
 /// 删除文件:移动到系统回收站(可恢复),而非永久删除。
 #[tauri::command]
-fn delete_file(path: String) -> Result<(), String> {
+async fn delete_file(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err("文件不存在".into());
@@ -299,7 +377,7 @@ fn delete_file(path: String) -> Result<(), String> {
 
 /// 在系统文件管理器中打开/定位路径(资源管理器 / Finder / 文件管理器)。
 #[tauri::command]
-fn open_path(path: String) -> Result<(), String> {
+async fn open_path(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err("路径不存在".into());
@@ -340,12 +418,13 @@ fn open_path(path: String) -> Result<(), String> {
 
 /// 重命名监控目录:磁盘改名 + 更新配置,并对新路径重建监听。
 #[tauri::command]
-fn rename_watch_dir(
-    state: State<AppState>,
+async fn rename_watch_dir(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     path: String,
     new_name: String,
 ) -> Result<String, String> {
+    let state = state.ready().await;
     let new_path = state
         .watch
         .rename_dir(&path, &new_name)
@@ -356,7 +435,8 @@ fn rename_watch_dir(
 
 /// 删除监控目录:整个文件夹移入回收站,并从配置中移除监控。
 #[tauri::command]
-fn delete_watch_dir(state: State<AppState>, path: String) -> Result<(), String> {
+async fn delete_watch_dir(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let state = state.ready().await;
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err("目录不存在".into());
@@ -367,7 +447,11 @@ fn delete_watch_dir(state: State<AppState>, path: String) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn list_archive_entries(state: State<AppState>, path: String) -> Result<Vec<ArchiveEntry>, String> {
+async fn list_archive_entries(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<ArchiveEntry>, String> {
+    let state = state.ready().await;
     let resolved = resolve_archive_chain(&path, &state.archive_cache).map_err(|e| e.to_string())?;
     let mut reader = open_archive(resolved.path()).map_err(|e| e.to_string())?;
     let entries = reader.entries().map_err(|e| e.to_string())?;
@@ -377,12 +461,13 @@ fn list_archive_entries(state: State<AppState>, path: String) -> Result<Vec<Arch
 }
 
 #[tauri::command]
-fn open_log_session(
-    state: State<AppState>,
+async fn open_log_session(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     archive_path: String,
     entry_path: String,
 ) -> Result<OpenResult, String> {
+    let state = state.ready().await;
     let resolved =
         resolve_archive_chain(&archive_path, &state.archive_cache).map_err(|e| e.to_string())?;
     let mut reader = open_archive(resolved.path()).map_err(|e| e.to_string())?;
@@ -479,12 +564,13 @@ fn open_log_session(
 }
 
 #[tauri::command]
-fn read_lines(
-    state: State<AppState>,
+async fn read_lines(
+    state: State<'_, AppState>,
     session_id: String,
     start: u64,
     count: u64,
 ) -> Result<Vec<LogLine>, String> {
+    let state = state.ready().await;
     state
         .sessions
         .read_lines(&session_id, start, count)
@@ -492,16 +578,18 @@ fn read_lines(
 }
 
 #[tauri::command]
-fn line_count(state: State<AppState>, session_id: String) -> u64 {
-    state.sessions.line_count(&session_id)
+async fn line_count(state: State<'_, AppState>, session_id: String) -> Result<u64, String> {
+    let state = state.ready().await;
+    Ok(state.sessions.line_count(&session_id))
 }
 
 #[tauri::command]
-fn export_session_snapshot(
-    state: State<AppState>,
+async fn export_session_snapshot(
+    state: State<'_, AppState>,
     session_id: String,
     destination: String,
 ) -> Result<SnapshotExportResult, String> {
+    let state = state.ready().await;
     state
         .sessions
         .export_snapshot(&session_id, std::path::Path::new(&destination))
@@ -509,12 +597,13 @@ fn export_session_snapshot(
 }
 
 #[tauri::command]
-fn set_session_encoding(
-    state: State<AppState>,
+async fn set_session_encoding(
+    state: State<'_, AppState>,
     app: tauri::AppHandle,
     session_id: String,
     encoding: String,
 ) -> Result<u64, String> {
+    let state = state.ready().await;
     let change = state
         .sessions
         .prepare_encoding_change(&session_id, &encoding)
@@ -530,8 +619,10 @@ fn set_session_encoding(
 }
 
 #[tauri::command]
-fn close_log_session(state: State<AppState>, session_id: String) {
+async fn close_log_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    let state = state.ready().await;
     state.sessions.close(&session_id);
+    Ok(())
 }
 
 fn spawn_watch(watch: &Arc<WatchState>, app: &tauri::AppHandle, dir: &str) -> Result<(), String> {
@@ -568,7 +659,7 @@ fn spawn_watch(watch: &Arc<WatchState>, app: &tauri::AppHandle, dir: &str) -> Re
 
 #[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+    if let Some(window) = app.get_window(MAIN_WINDOW_LABEL) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -640,39 +731,78 @@ pub fn run() {
         .setup(|app| {
             #[cfg(desktop)]
             {
+                let window_config = app
+                    .config()
+                    .app
+                    .windows
+                    .first()
+                    .cloned()
+                    .ok_or("缺少主窗口配置")?;
+                let window = WindowBuilder::from_config(app, &window_config)?
+                    .resizable(false)
+                    .build()?;
+                let startup_renderer = StartupRenderer::start(window.clone())?;
+
                 app.handle()
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
                 setup_tray(app)?;
+
+                let webview_window = window.clone();
+                std::thread::spawn(move || {
+                    let renderer = startup_renderer.clone();
+                    let webview_builder = WebviewBuilder::from_config(&window_config).on_page_load(
+                        move |webview, payload| {
+                            if payload.event() != PageLoadEvent::Finished {
+                                return;
+                            }
+                            renderer.stop();
+                            let window = webview.window();
+                            if let Ok(size) = window.inner_size() {
+                                let _ = webview.set_position(PhysicalPosition::new(0, 0));
+                                let _ = webview.set_size(size);
+                                let _ = webview.set_auto_resize(true);
+                            }
+                            let _ = window.set_resizable(true);
+                        },
+                    );
+                    let _ = webview_window.add_child(
+                        webview_builder,
+                        PhysicalPosition::new(-1, -1),
+                        PhysicalSize::new(1, 1),
+                    );
+                });
             }
 
+            let state = AppState::default();
+            app.manage(state.clone());
             let config_dir = app
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
-            std::fs::create_dir_all(&config_dir).ok();
-            let watch = WatchState::new(config_dir.join("watch-config.json"));
-
-            let sessions = Arc::new(SessionManager::default());
             let cache_dir = app
                 .path()
                 .app_cache_dir()
                 .unwrap_or_else(|_| std::env::temp_dir())
                 // Legacy cache directory keeps in-place LogPeek upgrades free of orphaned data.
                 .join("logpeek-cache");
-            sessions.set_cache_dir(cache_dir.clone());
-            let archive_cache = cache_dir.join("nested-archives");
-            // A clean application start invalidates every prior nested chain.
-            prepare_archive_cache(&archive_cache)?;
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let _ = std::fs::create_dir_all(&config_dir);
+                let watch = WatchState::new(config_dir.join("watch-config.json"));
+                let sessions = Arc::new(SessionManager::default());
+                sessions.set_cache_dir(cache_dir.clone());
+                let archive_root = cache_dir.join("nested-archives");
+                let archive_cache = create_archive_cache(&cache_dir);
+                state.publish(ReadyAppState {
+                    watch: watch.clone(),
+                    sessions,
+                    archive_cache: archive_cache.clone(),
+                });
 
-            // 启动恢复:对已配置目录建立监听
-            for dir in watch.list_dirs() {
-                let _ = spawn_watch(&watch, app.handle(), &dir);
-            }
-
-            app.manage(AppState {
-                watch,
-                sessions,
-                archive_cache,
+                for dir in watch.list_dirs() {
+                    let _ = spawn_watch(&watch, &app_handle, &dir);
+                }
+                cleanup_stale_archive_caches(&archive_root, &archive_cache);
             });
             Ok(())
         })
@@ -713,14 +843,20 @@ mod lifecycle_tests {
         let path =
             std::env::temp_dir().join(format!("logcrate-revision-test-{}.log", std::process::id()));
         std::fs::write(&path, b"first").unwrap();
-        let first = file_revision(path.to_string_lossy().into_owned()).unwrap();
+        let first =
+            tauri::async_runtime::block_on(file_revision(path.to_string_lossy().into_owned()))
+                .unwrap();
         assert!(first.exists);
         std::fs::write(&path, b"second version").unwrap();
-        let second = file_revision(path.to_string_lossy().into_owned()).unwrap();
+        let second =
+            tauri::async_runtime::block_on(file_revision(path.to_string_lossy().into_owned()))
+                .unwrap();
         assert!(second.exists);
         assert_ne!(first.revision, second.revision);
         std::fs::remove_file(&path).unwrap();
-        let missing = file_revision(path.to_string_lossy().into_owned()).unwrap();
+        let missing =
+            tauri::async_runtime::block_on(file_revision(path.to_string_lossy().into_owned()))
+                .unwrap();
         assert!(!missing.exists);
         assert!(missing.revision.is_none());
     }
@@ -774,16 +910,21 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn application_start_removes_stale_nested_archive_cache() {
-        let cache = std::env::temp_dir().join(format!(
+    fn application_start_keeps_current_cache_and_removes_stale_runs() {
+        let root = std::env::temp_dir().join(format!(
             "logcrate-startup-cache-test-{}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&cache).unwrap();
-        std::fs::write(cache.join("stale.archive"), b"stale").unwrap();
-        prepare_archive_cache(&cache).unwrap();
-        assert!(cache.exists());
-        assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
-        let _ = std::fs::remove_dir(cache);
+        let current = root.join("current");
+        let stale = root.join("stale");
+        let legacy_file = root.join("legacy.archive");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(&legacy_file, b"stale").unwrap();
+        cleanup_stale_archive_caches(&root, &current);
+        assert!(current.exists());
+        assert!(!stale.exists());
+        assert!(!legacy_file.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -194,7 +194,7 @@ export function LogContent({ session, activeKey, status = 'ready', error }: Prop
     return (
       <div className="col log-content-panel">
         <div className="empty-state log-session-state">
-          <div className="big">{status === 'error' ? '⚠' : '↻'}</div>
+          {status === 'error' && <div className="big">⚠</div>}
           <div className="desc">{message}</div>
         </div>
       </div>

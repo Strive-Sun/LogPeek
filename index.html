@@ -4,9 +4,77 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LogCrate</title>
+    <style>
+      /* 启动加载页:内联于 HTML,WebView 解析即显示,早于 JS bundle 加载。
+         进度条用纯 CSS 动画自动增长(不依赖 JS,因最耗时的 bundle 加载段前端未执行),
+         React 挂载后由 main.tsx 加 .done 类冲到 100% 并淡出,再移除本节点。 */
+      #boot-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        background: #ffffff;
+        font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+        transition: opacity 0.3s ease;
+      }
+      #boot-loader .boot-brand {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        color: #1c1c20;
+      }
+      #boot-loader .boot-track {
+        width: 220px;
+        height: 4px;
+        border-radius: 2px;
+        background: #e6e6ea;
+        overflow: hidden;
+      }
+      #boot-loader .boot-bar {
+        height: 100%;
+        width: 0;
+        border-radius: 2px;
+        background: #1a7fdb;
+        animation: boot-grow 8s cubic-bezier(0.1, 0.7, 0.2, 1) forwards;
+      }
+      /* 自动增长到 ~90% 后放缓,营造持续加载感且不提前到顶 */
+      @keyframes boot-grow {
+        0% {
+          width: 0;
+        }
+        40% {
+          width: 55%;
+        }
+        70% {
+          width: 78%;
+        }
+        100% {
+          width: 90%;
+        }
+      }
+      /* React 挂载完成:冲到 100% 再整页淡出 */
+      #boot-loader.done .boot-bar {
+        width: 100%;
+        animation: none;
+        transition: width 0.2s ease;
+      }
+      #boot-loader.done {
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <!-- 置于 #root 外:React 挂载(清空 #root)不会移除它,由 main.tsx 显式控制完成动画与移除 -->
+    <div id="boot-loader" role="status" aria-label="Loading">
+      <div class="boot-brand">LogCrate</div>
+      <div class="boot-track"><div class="boot-bar"></div></div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
