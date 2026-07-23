@@ -138,4 +138,3 @@ TBD - created by archiving change add-macos-file-access-onboarding. Update Purpo
 
 - **WHEN** 用户在完成首次授权后由 macOS 系统设置撤销权限
 - **THEN** 系统仅在真实访问失败时显示重新授权入口，不把历史引导记录误认为当前仍有权限
-
