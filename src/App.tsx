@@ -5,6 +5,7 @@ import type {
   AppUpdateInfo,
   AppUpdateProgress,
   DroppedFileInfo,
+  FileSearchResult,
   NewLogItem,
   OpenSessionResult,
   TreeNode,
@@ -16,6 +17,7 @@ import { DirTree } from './components/DirTree';
 import { LogContent } from './components/LogContent';
 import { LogTabs, type LogTabItem } from './components/LogTabs';
 import { EmptyState } from './components/EmptyState';
+import { FileSearchPanel } from './components/FileSearchPanel';
 import {
   classifyUpdateCheck,
   errorMessage,
@@ -114,6 +116,7 @@ export function App() {
     [t],
   );
   const [theme, setTheme] = useState<'dark' | 'light'>('light');
+  const [fileSearchOpen, setFileSearchOpen] = useState(false);
   const [appVersion, setAppVersion] = useState('…');
   const [autoCheckUpdates, setAutoCheckUpdates] = useState(() => loadAutoCheck(localStorage));
   const [skippedVersion, setSkippedVersion] = useState(() => loadSkippedVersion(localStorage));
@@ -362,6 +365,16 @@ export function App() {
     const onCtx = (e: MouseEvent) => e.preventDefault();
     document.addEventListener('contextmenu', onCtx);
     return () => document.removeEventListener('contextmenu', onCtx);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLocaleLowerCase() !== 'f') return;
+      event.preventDefault();
+      setFileSearchOpen(true);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const refreshTree = useCallback(async () => {
@@ -1107,6 +1120,7 @@ export function App() {
   return (
     <div className="app">
       <TopBar
+        onOpenSearch={() => setFileSearchOpen(true)}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
         count={count}
@@ -1189,6 +1203,26 @@ export function App() {
           }}
         />
       ) : null}
+
+      {fileSearchOpen && (
+        <FileSearchPanel
+          onClose={() => setFileSearchOpen(false)}
+          onOpenEntry={(entryKey) => void openEntry(entryKey)}
+          onMonitorAdded={async (item: FileSearchResult) => {
+            await refreshTree();
+            await revealNewItem(
+              {
+                id: item.path,
+                name: item.name,
+                kind: item.isArchive ? 'archive' : 'file',
+                source: item.parent,
+                age: 'now',
+              },
+              { openFile: false },
+            );
+          }}
+        />
+      )}
 
       <div className="cols">
         <DirTree

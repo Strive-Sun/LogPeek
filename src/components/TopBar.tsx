@@ -5,6 +5,7 @@ import { SettingsPanel } from './SettingsPanel';
 import { useI18n } from '../i18n/I18nProvider';
 
 interface Props {
+  onOpenSearch: () => void;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
   count: number;
@@ -55,9 +56,9 @@ export function TopBar(props: Props) {
   return (
     <div className="topbar">
       <span className="brand">LogCrate</span>
-      <span className="search" title={t('top.searchLater')}>
+      <button className="search" title={t('top.searchShortcut')} onClick={props.onOpenSearch}>
         🔍 {t('top.search')}
-      </span>
+      </button>
       <span className="spacer" />
 
       <button className="icon-btn" onClick={props.onToggleTheme} title={t('top.toggleTheme')}>

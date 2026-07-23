@@ -1,7 +1,13 @@
 mod archive;
 mod index;
+#[cfg(windows)]
+pub mod ntfs;
 #[cfg(all(test, windows))]
 mod performance;
+#[cfg(desktop)]
+mod search;
+#[cfg(desktop)]
+mod search_index;
 #[cfg(desktop)]
 mod startup;
 mod watcher;
@@ -16,6 +22,8 @@ use tauri::{Emitter, Manager, State};
 use tokio::sync::Notify;
 use watcher::{DetectedItem, DirectoryChange, DirectoryChangeBatch, DroppedFileInfo, WatchState};
 
+#[cfg(desktop)]
+use search::{FileSearchManager, SearchConfig, SearchPage, SearchStatus};
 #[cfg(desktop)]
 use startup::StartupRenderer;
 use tauri::menu::MenuItem;
@@ -101,6 +109,8 @@ struct ReadyAppState {
     watch: Arc<WatchState>,
     sessions: Arc<SessionManager>,
     archive_cache: PathBuf,
+    #[cfg(desktop)]
+    search: Arc<FileSearchManager>,
 }
 
 #[derive(Clone, Default)]
@@ -286,6 +296,129 @@ async fn inspect_dropped_file(
         .watch
         .inspect_dropped_file(&path)
         .map_err(|error| error.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn file_search_status(state: State<'_, AppState>) -> Result<SearchStatus, String> {
+    let state = state.ready().await;
+    Ok(state.search.status())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn file_search_config(state: State<'_, AppState>) -> Result<SearchConfig, String> {
+    let state = state.ready().await;
+    Ok(state.search.config())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn start_file_search_index(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    rebuild: bool,
+) -> Result<(), String> {
+    let state = state.ready().await;
+    state
+        .search
+        .start(app, rebuild)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn pause_file_search_index(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = state.ready().await;
+    state.search.pause(&app);
+    Ok(())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn clear_file_search_index(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let state = state.ready().await;
+    state.search.clear(&app).map_err(|error| error.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn set_file_search_exclusions(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    exclusions: Vec<String>,
+) -> Result<(), String> {
+    let state = state.ready().await;
+    state
+        .search
+        .set_exclusions(app, exclusions)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn search_files(
+    state: State<'_, AppState>,
+    query: String,
+    filter: String,
+    offset: u32,
+    limit: u32,
+) -> Result<SearchPage, String> {
+    let search = state.ready().await.search.clone();
+    tauri::async_runtime::spawn_blocking(move || search.query(&query, &filter, offset, limit))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn inspect_search_result(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<DroppedFileInfo, String> {
+    let state = state.ready().await;
+    match state.watch.inspect_dropped_file(&path) {
+        Ok(info) => Ok(info),
+        Err(error) => {
+            let _ = state.search.remove_stale_path(&path);
+            Err(error.to_string())
+        }
+    }
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn add_search_result_parent(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<String, String> {
+    let state = state.ready().await;
+    let file = PathBuf::from(&path);
+    if !file.is_file() {
+        let _ = state.search.remove_stale_path(&path);
+        return Err("文件已被删除或移动".into());
+    }
+    let parent = file
+        .parent()
+        .ok_or("无法确定文件所在目录")?
+        .to_string_lossy()
+        .into_owned();
+    let added = state
+        .watch
+        .add_dir(&parent)
+        .map_err(|error| error.to_string())?;
+    if added {
+        spawn_watch(&state.watch, &app, &parent)?;
+    }
+    Ok(parent)
 }
 
 /// 展开文件夹时按需读取直接子项并建立非递归 watcher。
@@ -793,15 +926,18 @@ pub fn run() {
                 sessions.set_cache_dir(cache_dir.clone());
                 let archive_root = cache_dir.join("nested-archives");
                 let archive_cache = create_archive_cache(&cache_dir);
+                let search = FileSearchManager::new(config_dir.join("file-search"));
                 state.publish(ReadyAppState {
                     watch: watch.clone(),
                     sessions,
                     archive_cache: archive_cache.clone(),
+                    search: search.clone(),
                 });
 
                 for dir in watch.list_dirs() {
                     let _ = spawn_watch(&watch, &app_handle, &dir);
                 }
+                let _ = search.resume_or_watch(app_handle.clone());
                 cleanup_stale_archive_caches(&archive_root, &archive_cache);
             });
             Ok(())
@@ -812,6 +948,15 @@ pub fn run() {
             collapse_directory,
             add_watch_dir,
             inspect_dropped_file,
+            file_search_status,
+            file_search_config,
+            start_file_search_index,
+            pause_file_search_index,
+            clear_file_search_index,
+            set_file_search_exclusions,
+            search_files,
+            inspect_search_result,
+            add_search_result_parent,
             remove_watch_dir,
             set_filter,
             get_filter,

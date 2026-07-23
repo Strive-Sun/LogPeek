@@ -136,6 +136,7 @@ button {
 
 /* ===== 应用整体三栏 + 顶栏 ===== */
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -161,7 +162,14 @@ button {
   border-radius: 5px;
   padding: 3px 10px;
   font-size: 12px;
-  cursor: not-allowed;
+  cursor: pointer;
+  background: var(--bg);
+}
+.topbar .search:hover,
+.topbar .search:focus-visible {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--hover);
 }
 .topbar .spacer {
   flex: 1;
@@ -181,6 +189,347 @@ button {
 }
 .topbar .icon-btn.active {
   background: var(--sel);
+}
+
+/* ===== 全局文件搜索 ===== */
+.file-search-panel {
+  position: absolute;
+  z-index: 40;
+  inset: 40px 0 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  color: var(--fg);
+  background: var(--bg);
+}
+.file-search-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 9px 12px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+}
+.file-search-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 240px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.file-search-input-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+.file-search-input-wrap input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--fg);
+  background: transparent;
+  font: inherit;
+}
+.file-search-input-clear {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--fg-dim);
+}
+.file-search-input-clear:hover {
+  background: var(--hover);
+}
+.file-search-filters {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.file-search-filters button {
+  padding: 5px 10px;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.file-search-filters button.active {
+  color: var(--fg);
+  background: var(--sel);
+}
+.file-search-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  padding: 4px 13px;
+  color: var(--fg-dim);
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.file-search-status.scanning {
+  color: var(--accent);
+}
+.file-search-status.error {
+  color: var(--danger);
+}
+.file-search-status button,
+.file-search-footer button,
+.file-search-archive-head button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  background: var(--bg);
+}
+.file-search-columns,
+.file-search-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.05fr) minmax(280px, 1.7fr) 90px 160px;
+  align-items: center;
+}
+.file-search-columns {
+  min-height: 30px;
+  padding: 0 13px;
+  color: var(--fg-dim);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: 11px;
+}
+.file-search-columns > span,
+.file-search-row > span {
+  min-width: 0;
+  padding-right: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-search-results {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.file-search-virtual {
+  position: relative;
+  width: 100%;
+}
+.file-search-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 44px;
+  padding: 0 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  color: var(--fg-dim);
+  cursor: default;
+  font-size: 12px;
+}
+.file-search-row:hover {
+  background: var(--hover);
+}
+.file-search-row.selected {
+  color: var(--fg);
+  background: var(--sel);
+}
+.file-search-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg);
+  font-weight: 500;
+}
+.file-search-parent {
+  direction: ltr;
+}
+.file-search-row mark {
+  padding: 0;
+  color: inherit;
+  background: color-mix(in srgb, #ffd54f 52%, transparent);
+}
+.file-search-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  padding: 4px 13px;
+  color: var(--fg-dim);
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  font-size: 11px;
+}
+.file-search-empty,
+.file-search-loading,
+.file-search-error {
+  display: grid;
+  place-items: center;
+  min-height: 150px;
+  padding: 24px;
+  color: var(--fg-dim);
+  text-align: center;
+}
+.file-search-error {
+  color: var(--danger);
+}
+.file-search-welcome {
+  width: min(620px, calc(100% - 40px));
+  margin: auto;
+  padding: 40px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  box-shadow: 0 14px 45px color-mix(in srgb, #000 14%, transparent);
+  text-align: center;
+}
+.file-search-welcome-icon {
+  font-size: 38px;
+}
+.file-search-welcome h2 {
+  margin: 10px 0 8px;
+}
+.file-search-welcome p {
+  margin: 0 auto 18px;
+  max-width: 520px;
+  color: var(--fg-dim);
+  line-height: 1.65;
+}
+.file-search-root-list,
+.file-search-path-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.file-search-root-list code,
+.file-search-path-list code {
+  overflow: hidden;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-search-welcome-actions,
+.file-search-settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 22px;
+}
+.file-search-settings {
+  position: absolute;
+  z-index: 3;
+  top: 58px;
+  right: 48px;
+  width: min(520px, calc(100% - 24px));
+  max-height: calc(100% - 80px);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  box-shadow: 0 10px 35px color-mix(in srgb, #000 24%, transparent);
+}
+.file-search-settings h3 {
+  margin: 0 0 16px;
+}
+.file-search-settings label {
+  display: block;
+  margin: 14px 0 7px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.file-search-path-list > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.file-search-path-list > div code {
+  flex: 1;
+}
+.file-search-settings-actions button,
+.file-search-welcome-actions button {
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  background: var(--bg);
+}
+.file-search-settings-actions button:hover,
+.file-search-welcome-actions button:hover {
+  background: var(--hover);
+}
+.file-search-settings-actions button.danger {
+  color: #fff;
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.file-search-archive {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+.file-search-archive-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+  padding: 5px 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.file-search-archive-head strong {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-search-archive-head span {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+.file-search-archive-list {
+  flex: 1;
+  overflow: auto;
+}
+.file-search-archive-list > button {
+  display: grid;
+  grid-template-columns: 30px 1fr 100px;
+  align-items: center;
+  width: 100%;
+  min-height: 42px;
+  padding: 4px 13px;
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.file-search-archive-list > button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+@media (max-width: 760px) {
+  .file-search-header {
+    flex-wrap: wrap;
+  }
+  .file-search-input-wrap {
+    flex-basis: calc(100% - 80px);
+  }
+  .file-search-columns,
+  .file-search-row {
+    grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.4fr);
+  }
+  .file-search-columns > :nth-child(n + 3),
+  .file-search-row > :nth-child(n + 3) {
+    display: none;
+  }
 }
 
 .badge {

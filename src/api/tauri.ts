@@ -17,6 +17,10 @@ import type {
   DetectedItem,
   DirectoryChangeBatch,
   FileRevision,
+  FileSearchConfig,
+  FileSearchFilter,
+  FileSearchPage,
+  FileSearchStatus,
   DroppedFileInfo,
   EncodingProgress,
   IndexProgress,
@@ -358,6 +362,59 @@ export const tauriApi = {
 
   async inspectDroppedFile(path: string): Promise<DroppedFileInfo> {
     return invoke<DroppedFileInfo>('inspect_dropped_file', { path });
+  },
+
+  fileSearchStatus(): Promise<FileSearchStatus> {
+    return invoke<FileSearchStatus>('file_search_status');
+  },
+
+  fileSearchConfig(): Promise<FileSearchConfig> {
+    return invoke<FileSearchConfig>('file_search_config');
+  },
+
+  async startFileSearchIndex(rebuild = false): Promise<void> {
+    await invoke('start_file_search_index', { rebuild });
+  },
+
+  async pauseFileSearchIndex(): Promise<void> {
+    await invoke('pause_file_search_index');
+  },
+
+  async clearFileSearchIndex(): Promise<void> {
+    await invoke('clear_file_search_index');
+  },
+
+  async chooseFileSearchExclusion(title?: string): Promise<string | null> {
+    const dir = await openDialog({ directory: true, multiple: false, title });
+    return typeof dir === 'string' ? dir : null;
+  },
+
+  async setFileSearchExclusions(exclusions: string[]): Promise<void> {
+    await invoke('set_file_search_exclusions', { exclusions });
+  },
+
+  searchFiles(
+    query: string,
+    filter: FileSearchFilter,
+    offset = 0,
+    limit = 200,
+  ): Promise<FileSearchPage> {
+    return invoke<FileSearchPage>('search_files', { query, filter, offset, limit });
+  },
+
+  inspectSearchResult(path: string): Promise<DroppedFileInfo> {
+    return invoke<DroppedFileInfo>('inspect_search_result', { path });
+  },
+
+  addSearchResultParent(path: string): Promise<string> {
+    return invoke<string>('add_search_result_parent', { path });
+  },
+
+  subscribeFileSearchStatus(onStatus: (status: FileSearchStatus) => void): () => void {
+    const un = listen<FileSearchStatus>('file-search-status', (event) => onStatus(event.payload));
+    return () => {
+      un.then((dispose) => dispose());
+    };
   },
 
   async addWatchPath(path: string): Promise<void> {

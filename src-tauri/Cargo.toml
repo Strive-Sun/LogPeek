@@ -1,5 +1,7 @@
 [package]
 name = "logpeek"
+autobins = false
+default-run = "logcrate"
 # 应用版本的唯一人工维护来源；Tauri 配置省略 version 后会自动读取此值。
 version = "1.0.11"
 description = "免解压跨平台桌面日志阅读器"
@@ -10,6 +12,14 @@ rust-version = "1.70"
 [lib]
 name = "logpeek_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "logcrate"
+path = "src/main.rs"
+
+[[bin]]
+name = "logcrate_index_service"
+path = "src/bin/logcrate_index_service.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -32,6 +42,12 @@ unrar_sys = "0.5.8"
 widestring = "1"
 notify = "6"
 notify-debouncer-full = "0.3"
+rusqlite = { version = "0.31", features = ["bundled"] }
+tantivy = { version = "0.22.1", default-features = false, features = ["mmap", "lz4-compression"] }
+jieba-rs = "0.6"
+pinyin = "0.9"
+zhconv = "0.3"
+convert_case = "0.1"
 encoding_rs = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 anyhow = "1"
@@ -44,3 +60,38 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-updater = "2.10.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7.0"
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Ioctl",
+  "Win32_System_Memory",
+  "Win32_System_Pipes",
+  "Win32_System_Services",
+] }
+
+# Full-disk search is CPU-bound even in `tauri dev`. Optimize only the application
+# and Orange tokenization/index packages so development builds exercise realistic
+# indexing performance without turning every Tauri dependency into a release build.
+[profile.dev.package.logpeek]
+opt-level = 2
+
+[profile.dev.package.convert_case]
+opt-level = 3
+
+[profile.dev.package.jieba-rs]
+opt-level = 3
+
+[profile.dev.package.pinyin]
+opt-level = 3
+
+[profile.dev.package.zhconv]
+opt-level = 3
+
+[profile.dev.package.tantivy]
+opt-level = 2

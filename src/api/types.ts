@@ -126,6 +126,53 @@ export interface DroppedFileInfo {
   alreadyMonitored: boolean;
 }
 
+export interface FileSearchConfig {
+  enabled: boolean;
+  roots: string[];
+  exclusions: string[];
+}
+
+export type FileSearchPhase = 'disabled' | 'scanning' | 'finalizing' | 'ready' | 'paused' | 'error';
+
+export interface FileSearchProviderStatus {
+  root: string;
+  provider: 'windowsNtfs' | 'folderScan' | string;
+  phase: string;
+  fallbackReason?: string;
+}
+
+export interface FileSearchStatus {
+  phase: FileSearchPhase;
+  scannedFiles: number;
+  skippedDirectories: number;
+  indexedFiles: number;
+  indexBytes: number;
+  roots: string[];
+  exclusions: string[];
+  providers: FileSearchProviderStatus[];
+  error?: string;
+}
+
+export type FileSearchFilter = 'all' | 'log' | 'archive';
+
+export interface FileSearchResult {
+  path: string;
+  name: string;
+  parent: string;
+  kind: 'file' | 'log' | 'archive';
+  size: number;
+  modifiedMs?: number;
+  isLog: boolean;
+  isArchive: boolean;
+}
+
+export interface FileSearchPage {
+  items: FileSearchResult[];
+  total: number;
+  partial: boolean;
+  elapsedMs: number;
+}
+
 /** 最外层磁盘源的存在性与稳定修订标识。 */
 export interface FileRevision {
   exists: boolean;

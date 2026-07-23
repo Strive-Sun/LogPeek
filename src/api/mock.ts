@@ -7,6 +7,11 @@ import type {
   ArchiveEntry,
   DirectoryChangeBatch,
   FileRevision,
+  FileSearchConfig,
+  FileSearchFilter,
+  FileSearchPage,
+  FileSearchResult,
+  FileSearchStatus,
   DroppedFileInfo,
   EncodingProgress,
   IndexProgress,
@@ -27,6 +32,58 @@ const MSGS = [
   'flushed 2048 records to segment 0007, wal truncated',
   'retrying upstream call attempt=2 backoff=400ms',
 ];
+
+const MOCK_SEARCH_RESULTS: FileSearchResult[] = [
+  {
+    path: 'D:\\project\\logs\\server-error.log',
+    name: 'server-error.log',
+    parent: 'D:\\project\\logs',
+    kind: 'log',
+    size: 28 * 1024 * 1024,
+    modifiedMs: Date.now() - 20 * 60_000,
+    isLog: true,
+    isArchive: false,
+  },
+  {
+    path: 'D:\\Downloads\\logs-0722.zip',
+    name: 'logs-0722.zip',
+    parent: 'D:\\Downloads',
+    kind: 'archive',
+    size: 96 * 1024 * 1024,
+    modifiedMs: Date.now() - 90 * 60_000,
+    isLog: false,
+    isArchive: true,
+  },
+  {
+    path: 'C:\\Users\\demo\\Desktop\\server.log',
+    name: 'server.log',
+    parent: 'C:\\Users\\demo\\Desktop',
+    kind: 'log',
+    size: 12 * 1024,
+    modifiedMs: Date.now() - 24 * 60 * 60_000,
+    isLog: true,
+    isArchive: false,
+  },
+];
+
+let mockSearchStatus: FileSearchStatus = {
+  phase: 'ready',
+  scannedFiles: 1_284_562,
+  skippedDirectories: 3,
+  indexedFiles: 1_284_562,
+  indexBytes: 84 * 1024 * 1024,
+  roots: ['C:\\', 'D:\\'],
+  exclusions: [],
+  providers: [
+    { root: 'C:\\', provider: 'windowsNtfs', phase: 'ready' },
+    { root: 'D:\\', provider: 'folderScan', phase: 'ready' },
+  ],
+};
+const mockSearchSubscribers = new Set<(status: FileSearchStatus) => void>();
+
+function publishMockSearchStatus() {
+  mockSearchSubscribers.forEach((subscriber) => subscriber(mockSearchStatus));
+}
 
 function pad(n: number, w: number) {
   return String(n).padStart(w, '0');
@@ -381,6 +438,98 @@ export const mockApi = {
 
   async inspectDroppedFile(_path: string): Promise<DroppedFileInfo> {
     throw new Error('mock.dropUnsupported');
+  },
+
+  async fileSearchStatus(): Promise<FileSearchStatus> {
+    return mockSearchStatus;
+  },
+
+  async fileSearchConfig(): Promise<FileSearchConfig> {
+    return {
+      enabled: mockSearchStatus.phase !== 'disabled',
+      roots: mockSearchStatus.roots,
+      exclusions: mockSearchStatus.exclusions,
+    };
+  },
+
+  async startFileSearchIndex(_rebuild = false): Promise<void> {
+    mockSearchStatus = { ...mockSearchStatus, phase: 'scanning', scannedFiles: 428_731 };
+    publishMockSearchStatus();
+    window.setTimeout(() => {
+      mockSearchStatus = { ...mockSearchStatus, phase: 'ready', scannedFiles: 1_284_562 };
+      publishMockSearchStatus();
+    }, 800);
+  },
+
+  async pauseFileSearchIndex(): Promise<void> {
+    mockSearchStatus = { ...mockSearchStatus, phase: 'paused' };
+    publishMockSearchStatus();
+  },
+
+  async clearFileSearchIndex(): Promise<void> {
+    mockSearchStatus = {
+      ...mockSearchStatus,
+      phase: 'disabled',
+      scannedFiles: 0,
+      indexedFiles: 0,
+      indexBytes: 0,
+    };
+    publishMockSearchStatus();
+  },
+
+  async chooseFileSearchExclusion(_title?: string): Promise<string | null> {
+    throw new Error('mock.selectDirectory');
+  },
+
+  async setFileSearchExclusions(exclusions: string[]): Promise<void> {
+    mockSearchStatus = { ...mockSearchStatus, exclusions, phase: 'scanning' };
+    publishMockSearchStatus();
+  },
+
+  async searchFiles(
+    query: string,
+    filter: FileSearchFilter,
+    offset = 0,
+    limit = 200,
+  ): Promise<FileSearchPage> {
+    await delay(20);
+    const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const matches = MOCK_SEARCH_RESULTS.filter((item) => {
+      if (filter === 'log' && item.kind !== 'log') return false;
+      if (filter === 'archive' && item.kind !== 'archive') return false;
+      const haystack = `${item.name} ${item.path}`.toLocaleLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+    return {
+      items: matches.slice(offset, offset + limit),
+      total: matches.length,
+      partial: mockSearchStatus.phase === 'scanning',
+      elapsedMs: 18,
+    };
+  },
+
+  async inspectSearchResult(path: string): Promise<DroppedFileInfo> {
+    const item = MOCK_SEARCH_RESULTS.find((candidate) => candidate.path === path);
+    if (!item) throw new Error('文件已被删除或移动');
+    return {
+      path: item.path,
+      name: item.name,
+      kind: item.isArchive ? 'archive' : 'file',
+      watchPath: item.parent,
+      isLog: item.isLog,
+      alreadyMonitored: false,
+    };
+  },
+
+  async addSearchResultParent(path: string): Promise<string> {
+    const item = MOCK_SEARCH_RESULTS.find((candidate) => candidate.path === path);
+    if (!item) throw new Error('文件已被删除或移动');
+    return item.parent;
+  },
+
+  subscribeFileSearchStatus(onStatus: (status: FileSearchStatus) => void): () => void {
+    mockSearchSubscribers.add(onStatus);
+    return () => mockSearchSubscribers.delete(onStatus);
   },
 
   async addWatchPath(_path: string): Promise<void> {},
