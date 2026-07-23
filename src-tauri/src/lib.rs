@@ -363,6 +363,22 @@ async fn set_file_search_exclusions(
 
 #[cfg(desktop)]
 #[tauri::command]
+async fn repair_file_search_service() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(crate::ntfs::ipc::repair_service)
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("NTFS 快速索引服务仅适用于 Windows".into())
+    }
+}
+
+#[cfg(desktop)]
+#[tauri::command]
 async fn search_files(
     state: State<'_, AppState>,
     query: String,
@@ -954,6 +970,7 @@ pub fn run() {
             pause_file_search_index,
             clear_file_search_index,
             set_file_search_exclusions,
+            repair_file_search_service,
             search_files,
             inspect_search_result,
             add_search_result_parent,

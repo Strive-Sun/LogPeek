@@ -25,6 +25,7 @@ interface Props {
   onClose: () => void;
   onOpenEntry: (entryKey: string) => void;
   onMonitorAdded: (item: FileSearchResult) => Promise<void>;
+  virtualizeResults?: boolean;
 }
 
 interface ArchiveView {
@@ -71,7 +72,12 @@ function resultIcon(item: FileSearchResult) {
   return item.isArchive ? '📦' : item.isLog ? '📄' : '📃';
 }
 
-export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props) {
+export function FileSearchPanel({
+  onClose,
+  onOpenEntry,
+  onMonitorAdded,
+  virtualizeResults = true,
+}: Props) {
   const { locale, t } = useI18n();
   const [status, setStatus] = useState<FileSearchStatus | null>(null);
   const [config, setConfig] = useState<FileSearchConfig | null>(null);
@@ -87,6 +93,7 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
   const [selected, setSelected] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [clearArmed, setClearArmed] = useState(false);
+  const [repairingService, setRepairingService] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; item: FileSearchResult } | null>(null);
   const [archive, setArchive] = useState<ArchiveView | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -99,6 +106,7 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 44,
+    initialRect: { width: 900, height: 600 },
     overscan: 12,
   });
 
@@ -129,7 +137,7 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
   }, []);
 
   const executeQuery = useCallback(
-    async (offset: number, append: boolean) => {
+    async (offset: number, append: boolean, preserveError = false) => {
       const trimmed = query.trim();
       if (!trimmed) {
         queryGeneration.current += 1;
@@ -144,7 +152,7 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
       if (!append) queryGeneration.current = generation;
       if (append) setLoadingMore(true);
       else setLoading(true);
-      setError(null);
+      if (!preserveError) setError(null);
       try {
         const page = await api.searchFiles(trimmed, filter, offset, PAGE_SIZE);
         if (!shouldApplySearchResponse(generation, queryGeneration.current)) return;
@@ -177,9 +185,10 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
   }, [executeQuery, progressRefreshKey]);
 
   useEffect(() => {
+    if (!virtualizeResults) return;
     if (selected < 0 || selected >= items.length) return;
     virtualizer.scrollToIndex(selected, { align: 'auto' });
-  }, [items.length, selected, virtualizer]);
+  }, [items.length, selected, virtualizeResults, virtualizer]);
 
   const openArchive = useCallback(async (path: string, stack?: string[]) => {
     const nextStack = stack ?? [path];
@@ -208,7 +217,7 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
         }
       } catch (reason) {
         setError(String(reason));
-        void executeQuery(0, false);
+        void executeQuery(0, false, true);
       }
     },
     [executeQuery, onClose, onOpenEntry, openArchive],
@@ -237,7 +246,7 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
         await onMonitorAdded(item);
       } catch (reason) {
         setError(String(reason));
-        void executeQuery(0, false);
+        void executeQuery(0, false, true);
       }
     },
     [executeQuery, onMonitorAdded],
@@ -404,6 +413,41 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
               <code key={root}>{root}</code>
             ))}
           </div>
+          <label>{t('search.providers')}</label>
+          <div className="file-search-provider-list">
+            {status.providers.map((provider) => (
+              <div key={provider.root} className={`file-search-provider ${provider.phase}`}>
+                <code>{provider.root}</code>
+                <span>
+                  {t(`search.provider.${provider.provider}` as 'search.provider.windowsNtfs')}
+                </span>
+                <span>{provider.phase}</span>
+                {provider.fallbackReason && (
+                  <small>
+                    {t('search.provider.fallback', { reason: provider.fallbackReason })}
+                  </small>
+                )}
+              </div>
+            ))}
+          </div>
+          {status.providers.some(
+            (provider) => provider.provider === 'folderScan' && provider.fallbackReason,
+          ) && (
+            <button
+              disabled={repairingService}
+              onClick={() => {
+                setRepairingService(true);
+                setError(null);
+                void api
+                  .repairFileSearchService()
+                  .then(() => api.startFileSearchIndex(false))
+                  .catch((reason) => setError(String(reason)))
+                  .finally(() => setRepairingService(false));
+              }}
+            >
+              {t(repairingService ? 'search.repairingService' : 'search.repairService')}
+            </button>
+          )}
           <label>{t('search.exclusions')}</label>
           <div className="file-search-path-list">
             {config.exclusions.length === 0 && <span>{t('search.noExclusions')}</span>}
@@ -510,8 +554,16 @@ export function FileSearchPanel({ onClose, onOpenEntry, onMonitorAdded }: Props)
             ) : items.length === 0 ? (
               <div className="file-search-empty">{t('search.noResults')}</div>
             ) : (
-              <div className="file-search-virtual" style={{ height: virtualizer.getTotalSize() }}>
-                {virtualizer.getVirtualItems().map((row) => {
+              <div
+                className="file-search-virtual"
+                style={{
+                  height: virtualizeResults ? virtualizer.getTotalSize() : items.length * 44,
+                }}
+              >
+                {(virtualizeResults
+                  ? virtualizer.getVirtualItems()
+                  : items.map((_, index) => ({ index, start: index * 44 }) as const)
+                ).map((row) => {
                   const item = items[row.index];
                   return (
                     <div

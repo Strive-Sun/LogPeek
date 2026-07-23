@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <CustomAction
+      Id="InstallLogCrateIndexService"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]logcrate_index_service.exe&quot; --install"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check" />
+    <CustomAction
+      Id="UninstallLogCrateIndexService"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]logcrate_index_service.exe&quot; --uninstall"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="InstallLogCrateIndexService" After="InstallFiles">
+        NOT REMOVE~=&quot;ALL&quot;
+      </Custom>
+      <Custom Action="UninstallLogCrateIndexService" Before="RemoveFiles">
+        REMOVE~=&quot;ALL&quot;
+      </Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

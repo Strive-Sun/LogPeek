@@ -162,6 +162,8 @@ export interface FileSearchResult {
   kind: 'file' | 'log' | 'archive';
   size: number;
   modifiedMs?: number;
+  readable?: boolean;
+  contentType?: string;
   isLog: boolean;
   isArchive: boolean;
 }

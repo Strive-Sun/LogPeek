@@ -5,8 +5,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::sleep;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 use widestring::U16CString;
 use windows_service::service::{ServiceAccess, ServiceState};
@@ -31,6 +31,7 @@ const MAGIC: [u8; 4] = *b"LCIX";
 const HEADER_SIZE: usize = 12;
 const MAX_FRAME_BODY: usize = 8 * 1024 * 1024;
 const MAX_BATCH_RECORDS: usize = 131_072;
+const MAX_CONCURRENT_CLIENTS: usize = 4;
 const PIPE_BUFFER_SIZE: u32 = 1024 * 1024;
 const PIPE_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)";
 
@@ -130,6 +131,11 @@ where
     }
 }
 
+pub fn repair_service() -> anyhow::Result<()> {
+    start_installed_service()?;
+    connect_and_handshake().map(|_| ())
+}
+
 fn connect_and_handshake() -> anyhow::Result<File> {
     let mut pipe = connect()?;
     write_request(&mut pipe, &Request::Hello)?;
@@ -141,37 +147,99 @@ fn connect_and_handshake() -> anyhow::Result<File> {
 }
 
 pub fn run_pipe_server(stop: &AtomicBool, once: bool) -> anyhow::Result<()> {
-    loop {
+    if once {
         let pipe = create_server_pipe()?;
-        let connected = unsafe { ConnectNamedPipe(pipe.0, null_mut()) };
-        if connected == 0 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(535) {
-                return Err(error).context("等待索引服务 named pipe 客户端失败");
-            }
-        }
+        connect_server_pipe(&pipe)?;
         if stop.load(Ordering::SeqCst) {
-            break;
+            return Ok(());
         }
-        let raw = pipe.0 as RawHandle;
-        std::mem::forget(pipe);
-        let mut file = unsafe { File::from_raw_handle(raw) };
-        let served = serve_client(&mut file);
-        let _ = file.flush();
-        unsafe {
-            DisconnectNamedPipe(raw as HANDLE);
-        }
-        drop(file);
-        if let Err(error) = served {
-            if once {
-                return Err(error);
+        return serve_connected_pipe(pipe);
+    }
+
+    let active = AtomicUsize::new(0);
+    thread::scope(|scope| -> anyhow::Result<()> {
+        loop {
+            let pipe = create_server_pipe()?;
+            connect_server_pipe(&pipe)?;
+            if stop.load(Ordering::SeqCst) {
+                return Ok(());
             }
+            let Some(guard) = try_acquire_client_slot(&active) else {
+                reject_busy_client(pipe);
+                continue;
+            };
+            scope.spawn(move || {
+                let _guard = guard;
+                let _ = serve_connected_pipe(pipe);
+            });
         }
-        if once {
-            break;
+    })
+}
+
+fn connect_server_pipe(pipe: &OwnedPipe) -> anyhow::Result<()> {
+    let connected = unsafe { ConnectNamedPipe(pipe.0, null_mut()) };
+    if connected == 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(535) {
+            return Err(error).context("等待索引服务 named pipe 客户端失败");
         }
     }
     Ok(())
+}
+
+fn serve_connected_pipe(pipe: OwnedPipe) -> anyhow::Result<()> {
+    let raw = pipe.0 as RawHandle;
+    std::mem::forget(pipe);
+    let mut file = unsafe { File::from_raw_handle(raw) };
+    let served = serve_client(&mut file);
+    let _ = file.flush();
+    unsafe {
+        DisconnectNamedPipe(raw as HANDLE);
+    }
+    drop(file);
+    served
+}
+
+fn reject_busy_client(pipe: OwnedPipe) {
+    let raw = pipe.0 as RawHandle;
+    std::mem::forget(pipe);
+    let mut file = unsafe { File::from_raw_handle(raw) };
+    let _ = write_response(
+        &mut file,
+        &Response::Error {
+            code: 429,
+            message: "索引服务并发请求已达上限".into(),
+        },
+    );
+    unsafe {
+        DisconnectNamedPipe(raw as HANDLE);
+    }
+}
+
+struct ActiveClientGuard<'a>(&'a AtomicUsize);
+
+fn try_acquire_client_slot(active: &AtomicUsize) -> Option<ActiveClientGuard<'_>> {
+    let mut current = active.load(Ordering::Acquire);
+    loop {
+        if current >= MAX_CONCURRENT_CLIENTS {
+            return None;
+        }
+        match active.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Some(ActiveClientGuard(active)),
+            Err(next) => current = next,
+        }
+    }
+}
+
+impl Drop for ActiveClientGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub fn wake_pipe_server() {
@@ -193,6 +261,8 @@ fn serve_client(pipe: &mut File) -> anyhow::Result<()> {
                 },
             )?,
             Request::EnumerateMft { volume } => {
+                // A disconnected client makes the batch write fail. Propagating that failure from
+                // the enumeration callback is the cancellation signal for the current FSCTL loop.
                 let result = super::enumerate_mft(volume, |records| {
                     write_response(pipe, &Response::MftBatch(records))
                 });
@@ -549,6 +619,10 @@ fn decode_records(body: &[u8]) -> anyhow::Result<Vec<MftRecord>> {
 
 struct OwnedPipe(HANDLE);
 
+// Windows kernel handles are process-wide. Ownership is moved to exactly one scoped client
+// thread, which closes the handle through File/Drop before that thread exits.
+unsafe impl Send for OwnedPipe {}
+
 impl Drop for OwnedPipe {
     fn drop(&mut self) {
         if self.0 != INVALID_HANDLE_VALUE {
@@ -727,5 +801,55 @@ mod tests {
         let mut records = encode_records(&[record()]).unwrap();
         records.push(0);
         assert!(decode_records(&records).is_err());
+    }
+
+    #[test]
+    fn disconnect_is_cancellation_and_active_slots_are_released() {
+        let disconnect = anyhow!(io::Error::from_raw_os_error(109));
+        assert!(is_disconnect(&disconnect));
+
+        let active = AtomicUsize::new(1);
+        {
+            let _guard = ActiveClientGuard(&active);
+            assert_eq!(active.load(Ordering::Acquire), 1);
+        }
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert_eq!(MAX_CONCURRENT_CLIENTS, 4);
+    }
+
+    #[test]
+    fn concurrent_client_storm_is_bounded() {
+        let active = AtomicUsize::new(0);
+        let guards = (0..64)
+            .filter_map(|_| try_acquire_client_slot(&active))
+            .collect::<Vec<_>>();
+        assert_eq!(guards.len(), MAX_CONCURRENT_CLIENTS);
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONCURRENT_CLIENTS);
+        drop(guards);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn ipc_parser_fuzz_property_never_panics_or_allocates_oversized_frames() {
+        let mut state = 0x9e37_79b9_u32;
+        for length in 0..2048_usize {
+            let mut bytes = vec![0_u8; length];
+            for byte in &mut bytes {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                *byte = state as u8;
+            }
+            let request = std::panic::catch_unwind(|| {
+                let _ = read_request(&mut Cursor::new(&bytes));
+            });
+            let records = std::panic::catch_unwind(|| {
+                let _ = decode_records(&bytes);
+            });
+            assert!(request.is_ok());
+            assert!(records.is_ok());
+        }
+        assert!(PIPE_SDDL.contains(";;;IU"));
+        assert!(PIPE_SDDL.contains(";;;SY"));
     }
 }

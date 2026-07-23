@@ -407,6 +407,26 @@ button {
   flex-direction: column;
   gap: 6px;
 }
+
+.file-search-provider-list {
+  display: grid;
+  gap: 6px;
+}
+
+.file-search-provider {
+  display: grid;
+  grid-template-columns: minmax(54px, auto) 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.file-search-provider small {
+  grid-column: 1 / -1;
+  color: var(--danger);
+}
 .file-search-root-list code,
 .file-search-path-list code {
   overflow: hidden;

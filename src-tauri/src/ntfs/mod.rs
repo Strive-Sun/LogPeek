@@ -415,6 +415,26 @@ mod tests {
         record
     }
 
+    fn v3_record(id: [u8; 16], parent: [u8; 16], name: &str, reason: u32) -> Vec<u8> {
+        let name = name.encode_utf16().collect::<Vec<_>>();
+        let length = USN_V3_MIN_SIZE + name.len() * 2;
+        let mut record = vec![0_u8; length];
+        record[0..4].copy_from_slice(&(length as u32).to_le_bytes());
+        record[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        record[8..24].copy_from_slice(&id);
+        record[24..40].copy_from_slice(&parent);
+        record[40..48].copy_from_slice(&123_i64.to_le_bytes());
+        record[56..60].copy_from_slice(&reason.to_le_bytes());
+        record[68..72].copy_from_slice(&32_u32.to_le_bytes());
+        record[72..74].copy_from_slice(&((name.len() * 2) as u16).to_le_bytes());
+        record[74..76].copy_from_slice(&(USN_V3_MIN_SIZE as u16).to_le_bytes());
+        for (index, word) in name.into_iter().enumerate() {
+            let offset = USN_V3_MIN_SIZE + index * 2;
+            record[offset..offset + 2].copy_from_slice(&word.to_le_bytes());
+        }
+        record
+    }
+
     #[test]
     fn parses_v2_enum_batches_and_unicode_names() {
         let record = v2_record(42, 5, "调试.log", 0);
@@ -425,6 +445,42 @@ mod tests {
         assert_eq!(records[0].id, FileId::from_u64(42));
         assert_eq!(records[0].parent_id, FileId::from_u64(5));
         assert_eq!(records[0].name, "调试.log");
+    }
+
+    #[test]
+    fn parses_fixed_v3_fixture_with_128_bit_references_and_rename_reason() {
+        let id = [0x11; 16];
+        let parent = [0x22; 16];
+        let fixture = v3_record(id, parent, "renamed.log", 0x0000_2000);
+        let record = parse_usn_record(&fixture).unwrap();
+        assert_eq!(record.id, FileId::from_bytes(id));
+        assert_eq!(record.parent_id, FileId::from_bytes(parent));
+        assert_eq!(record.name, "renamed.log");
+        assert_eq!(record.reason, 0x0000_2000);
+        assert_eq!(record.usn, 123);
+    }
+
+    #[test]
+    fn parser_boundary_fuzz_rejects_malformed_v2_v3_lengths_without_panicking() {
+        let fixtures = [
+            v2_record(7, 5, "boundary.log", 0),
+            v3_record([7; 16], [5; 16], "boundary.log", 0),
+        ];
+        for fixture in fixtures {
+            for cut in 0..fixture.len() {
+                let result = std::panic::catch_unwind(|| parse_usn_record(&fixture[..cut]));
+                assert!(result.is_ok());
+                assert!(result.unwrap().is_err());
+            }
+            let mut oversized = fixture.clone();
+            oversized[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+            assert!(parse_usn_record(&oversized).is_err());
+            let mut odd_name = fixture;
+            let name_length_offset = if odd_name[4] == 2 { 56 } else { 72 };
+            odd_name[name_length_offset..name_length_offset + 2]
+                .copy_from_slice(&3_u16.to_le_bytes());
+            assert!(parse_usn_record(&odd_name).is_err());
+        }
     }
 
     #[test]

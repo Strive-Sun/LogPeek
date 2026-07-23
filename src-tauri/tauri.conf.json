@@ -30,9 +30,19 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "resources": {
-      "../resources/licenses/unrar.txt": "licenses/unrar.txt"
+      "../resources/licenses/unrar.txt": "licenses/unrar.txt",
+      "../resources/licenses/orange-gplv3.md": "licenses/orange-gplv3.md"
     },
-    "icon": ["../resources/icons/app/32x32.png", "../resources/icons/app/128x128.png", "../resources/icons/app/128x128@2x.png", "../resources/icons/app/icon.icns", "../resources/icons/app/icon.ico", "../resources/icons/app/icon.png"]
+    "icon": ["../resources/icons/app/32x32.png", "../resources/icons/app/128x128.png", "../resources/icons/app/128x128@2x.png", "../resources/icons/app/icon.icns", "../resources/icons/app/icon.ico", "../resources/icons/app/icon.png"],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "./windows/nsis-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["./windows/index-service.wxs"]
+      }
+    }
   },
   "plugins": {
     "updater": {

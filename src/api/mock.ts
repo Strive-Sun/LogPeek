@@ -486,6 +486,8 @@ export const mockApi = {
     publishMockSearchStatus();
   },
 
+  async repairFileSearchService(): Promise<void> {},
+
   async searchFiles(
     query: string,
     filter: FileSearchFilter,

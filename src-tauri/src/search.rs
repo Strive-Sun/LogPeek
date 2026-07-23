@@ -21,11 +21,44 @@ use tauri::Emitter;
 
 const SCHEMA_VERSION: i64 = 8;
 const SCAN_WRITE_BATCH: usize = 8_192;
+const NTFS_RESOLVE_BATCH: usize = 2_048;
 const EVENT_BATCH: usize = 512;
 const EVENT_QUEUE_CAPACITY: usize = 4096;
 const QUERY_LIMIT_MAX: u32 = 500;
+const METADATA_WORKERS_MAX: usize = 4;
 #[cfg(windows)]
 const MAX_USN_REPLAY_RECORDS: usize = 1_000_000;
+
+fn query_index_staging_path(active: &Path) -> PathBuf {
+    let mut value = active.as_os_str().to_os_string();
+    value.push(".next");
+    PathBuf::from(value)
+}
+
+fn query_index_previous_path(active: &Path) -> PathBuf {
+    let mut value = active.as_os_str().to_os_string();
+    value.push(".previous");
+    PathBuf::from(value)
+}
+
+fn recover_query_index_directories(active: &Path) -> anyhow::Result<()> {
+    let staging = query_index_staging_path(active);
+    let previous = query_index_previous_path(active);
+    if !active.exists() {
+        if previous.exists() {
+            fs::rename(&previous, active)?;
+        } else if staging.exists() {
+            fs::rename(&staging, active)?;
+        }
+    }
+    if active.exists() && previous.exists() {
+        fs::remove_dir_all(previous)?;
+    }
+    if active.exists() && staging.exists() {
+        fs::remove_dir_all(staging)?;
+    }
+    Ok(())
+}
 
 const CREATE_FTS_TRIGGERS: &str =
     "CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
@@ -132,6 +165,8 @@ pub struct SearchResultItem {
     pub kind: String,
     pub size: u64,
     pub modified_ms: Option<u64>,
+    pub readable: bool,
+    pub content_type: String,
     pub is_log: bool,
     pub is_archive: bool,
 }
@@ -161,6 +196,7 @@ struct IndexedFile {
 pub struct FileSearchManager {
     db_path: PathBuf,
     config_path: PathBuf,
+    query_index_path: PathBuf,
     config: Mutex<SearchConfig>,
     status: Mutex<SearchStatus>,
     generation: AtomicU64,
@@ -169,8 +205,10 @@ pub struct FileSearchManager {
     event_sender: Mutex<Option<SyncSender<Event>>>,
     event_dirty: Arc<AtomicBool>,
     query_index: Mutex<Option<SearchIndex>>,
+    staged_query_index: Mutex<Option<SearchIndex>>,
     query_index_ready: AtomicBool,
     query_index_bulk: AtomicBool,
+    query_index_staged: AtomicBool,
     persistence_recovery: AtomicBool,
 }
 
@@ -178,12 +216,14 @@ impl FileSearchManager {
     pub fn new(data_dir: PathBuf) -> Arc<Self> {
         let _ = fs::create_dir_all(&data_dir);
         let config_path = data_dir.join("file-search.json");
+        let query_index_path = data_dir.join("file-search-orange-gpl-v1");
+        let _ = recover_query_index_directories(&query_index_path);
         let config = read_config(&config_path).unwrap_or_default();
         let mut status = SearchStatus::disabled(&config);
         if config.enabled && data_dir.join("file-search.sqlite3").is_file() {
             status.phase = "ready".into();
         }
-        let query_index = SearchIndex::open(&data_dir.join("file-search-orange-gpl-v1"));
+        let query_index = SearchIndex::open(&query_index_path);
         if let Err(error) = &query_index {
             status.error = Some(format!("Tantivy query index: {error}"));
         }
@@ -195,6 +235,7 @@ impl FileSearchManager {
         let manager = Arc::new(Self {
             db_path: data_dir.join("file-search.sqlite3"),
             config_path,
+            query_index_path,
             config: Mutex::new(config),
             status: Mutex::new(status),
             generation: AtomicU64::new(0),
@@ -203,8 +244,10 @@ impl FileSearchManager {
             event_sender: Mutex::new(None),
             event_dirty: Arc::new(AtomicBool::new(false)),
             query_index: Mutex::new(query_index.ok()),
+            staged_query_index: Mutex::new(None),
             query_index_ready: AtomicBool::new(false),
             query_index_bulk: AtomicBool::new(false),
+            query_index_staged: AtomicBool::new(false),
             persistence_recovery: AtomicBool::new(false),
         });
         match database_state {
@@ -574,7 +617,11 @@ impl FileSearchManager {
     fn index_files(&self, files: &[IndexedFile]) -> anyhow::Result<()> {
         let entries = files.iter().map(search_index_entry).collect::<Vec<_>>();
         let bulk = self.query_index_bulk.load(Ordering::Acquire);
-        if let Some(index) = self.query_index.lock().unwrap().as_mut() {
+        if bulk && self.query_index_staged.load(Ordering::Acquire) {
+            if let Some(index) = self.staged_query_index.lock().unwrap().as_mut() {
+                index.add_batch(&entries)?;
+            }
+        } else if let Some(index) = self.query_index.lock().unwrap().as_mut() {
             if bulk {
                 index.add_batch(&entries)?;
             } else {
@@ -589,22 +636,53 @@ impl FileSearchManager {
     }
 
     fn begin_query_index_bulk(&self) -> anyhow::Result<()> {
-        if let Some(index) = self.query_index.lock().unwrap().as_mut() {
-            index.begin_bulk()?;
-            self.query_index_bulk.store(true, Ordering::Release);
+        self.staged_query_index.lock().unwrap().take();
+        let staging_path = query_index_staging_path(&self.query_index_path);
+        if staging_path.exists() {
+            fs::remove_dir_all(&staging_path)?;
         }
+        let has_complete_snapshot = self
+            .query_index
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|index| index.num_docs() > 0);
+        if has_complete_snapshot {
+            let mut staging = SearchIndex::open(&staging_path)?;
+            staging.begin_bulk()?;
+            *self.staged_query_index.lock().unwrap() = Some(staging);
+            self.query_index_staged.store(true, Ordering::Release);
+        } else if let Some(index) = self.query_index.lock().unwrap().as_mut() {
+            index.begin_bulk()?;
+            self.query_index_staged.store(false, Ordering::Release);
+        }
+        self.query_index_bulk.store(true, Ordering::Release);
         Ok(())
     }
 
     fn finish_query_index_bulk(&self) -> anyhow::Result<()> {
-        if let Some(index) = self.query_index.lock().unwrap().as_mut() {
+        if self.query_index_staged.load(Ordering::Acquire) {
+            if let Some(mut staging) = self.staged_query_index.lock().unwrap().take() {
+                staging.finish_bulk()?;
+                drop(staging);
+            }
+            self.activate_staged_query_index()?;
+        } else if let Some(index) = self.query_index.lock().unwrap().as_mut() {
             index.finish_bulk()?;
         }
         self.query_index_bulk.store(false, Ordering::Release);
+        self.query_index_staged.store(false, Ordering::Release);
+        self.query_index_ready.store(true, Ordering::Release);
         Ok(())
     }
 
     fn clear_query_index(&self) -> anyhow::Result<()> {
+        self.staged_query_index.lock().unwrap().take();
+        self.query_index_staged.store(false, Ordering::Release);
+        let staging_path = query_index_staging_path(&self.query_index_path);
+        if staging_path.exists() {
+            fs::remove_dir_all(staging_path)?;
+        }
         if let Some(index) = self.query_index.lock().unwrap().as_mut() {
             index.clear()?;
         }
@@ -612,10 +690,53 @@ impl FileSearchManager {
     }
 
     fn commit_query_index(&self) -> anyhow::Result<()> {
+        if self.query_index_staged.load(Ordering::Acquire) {
+            if let Some(index) = self.staged_query_index.lock().unwrap().as_mut() {
+                index.commit()?;
+            }
+            return Ok(());
+        }
         if let Some(index) = self.query_index.lock().unwrap().as_mut() {
             index.commit()?;
         }
         Ok(())
+    }
+
+    fn activate_staged_query_index(&self) -> anyhow::Result<()> {
+        let staging = query_index_staging_path(&self.query_index_path);
+        let previous = query_index_previous_path(&self.query_index_path);
+        self.query_index.lock().unwrap().take();
+        if previous.exists() {
+            fs::remove_dir_all(&previous)?;
+        }
+        if self.query_index_path.exists() {
+            fs::rename(&self.query_index_path, &previous)?;
+        }
+        if let Err(error) = fs::rename(&staging, &self.query_index_path) {
+            if previous.exists() && !self.query_index_path.exists() {
+                let _ = fs::rename(&previous, &self.query_index_path);
+            }
+            *self.query_index.lock().unwrap() = SearchIndex::open(&self.query_index_path).ok();
+            return Err(error.into());
+        }
+        match SearchIndex::open(&self.query_index_path) {
+            Ok(index) => {
+                *self.query_index.lock().unwrap() = Some(index);
+                if previous.exists() {
+                    fs::remove_dir_all(previous)?;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let failed = query_index_staging_path(&self.query_index_path);
+                let _ = fs::rename(&self.query_index_path, &failed);
+                if previous.exists() {
+                    let _ = fs::rename(&previous, &self.query_index_path);
+                }
+                *self.query_index.lock().unwrap() = SearchIndex::open(&self.query_index_path).ok();
+                Err(error)
+            }
+        }
     }
 
     fn query_tantivy(
@@ -635,24 +756,29 @@ impl FileSearchManager {
         let (entries, total) = index.search(terms, filter, offset, limit)?;
         let items = entries
             .into_iter()
-            .map(|entry| SearchResultItem {
-                parent: Path::new(&entry.path)
-                    .parent()
-                    .map(|parent| parent.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                path: entry.path,
-                name: entry.name,
-                kind: if entry.is_archive {
-                    "archive".into()
-                } else if entry.is_log {
-                    "log".into()
-                } else {
-                    "file".into()
-                },
-                size: 0,
-                modified_ms: None,
-                is_log: entry.is_log,
-                is_archive: entry.is_archive,
+            .map(|entry| {
+                let content_type = content_type_for_name(&entry.name).into();
+                SearchResultItem {
+                    parent: Path::new(&entry.path)
+                        .parent()
+                        .map(|parent| parent.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    path: entry.path,
+                    name: entry.name,
+                    kind: if entry.is_archive {
+                        "archive".into()
+                    } else if entry.is_log {
+                        "log".into()
+                    } else {
+                        "file".into()
+                    },
+                    size: 0,
+                    modified_ms: None,
+                    readable: false,
+                    content_type,
+                    is_log: entry.is_log,
+                    is_archive: entry.is_archive,
+                }
             })
             .collect();
         Ok(Some((items, total)))
@@ -1076,7 +1202,7 @@ fn index_ntfs_volume_paths(
     let (_, records) = resolve_mft_files_in_batches_retain(
         &root,
         snapshot.records,
-        SCAN_WRITE_BATCH,
+        NTFS_RESOLVE_BATCH,
         |entries| {
             if manager.is_cancelled(generation) {
                 anyhow::bail!("MFT 路径重建已取消");
@@ -1127,15 +1253,19 @@ fn persist_and_finalize_ntfs_volume(db_path: &Path, job: NtfsFinalizeJob) -> any
     connection.pragma_update(None, "synchronous", "OFF")?;
     connection.pragma_update(None, "cache_size", -65_536)?;
     connection.execute("DELETE FROM files WHERE root = ?1", params![&job.root])?;
-    let (_, records) =
-        resolve_mft_files_in_batches_retain(&job.root, job.records, SCAN_WRITE_BATCH, |entries| {
+    let (_, records) = resolve_mft_files_in_batches_retain(
+        &job.root,
+        job.records,
+        NTFS_RESOLVE_BATCH,
+        |entries| {
             let files = entries
                 .into_iter()
                 .filter(|entry| !is_excluded(Path::new(&entry.path), &job.exclusions))
                 .map(|entry| indexed_mft_entry(&job.root, entry))
                 .collect::<Vec<_>>();
             insert_batch(&mut connection, &files)
-        })?;
+        },
+    )?;
     replace_ntfs_nodes(&mut connection, &job.root, &records)?;
     let journal_after = query_usn_via_service(job.volume)?;
     if journal_after.journal_id != job.journal_before.journal_id
@@ -1311,7 +1441,7 @@ fn apply_usn_changes(
     tx.commit()?;
 
     let records = new_by_id.into_values().collect::<Vec<_>>();
-    resolve_mft_files_in_batches(root, records, SCAN_WRITE_BATCH, |entries| {
+    resolve_mft_files_in_batches(root, records, NTFS_RESOLVE_BATCH, |entries| {
         let files = entries
             .into_iter()
             .filter(|entry| new_affected.contains(&entry.id))
@@ -2149,6 +2279,8 @@ fn result_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<SearchResultItem> {
         name: row.get(1)?,
         size: row.get(3)?,
         modified_ms: row.get(4)?,
+        readable: false,
+        content_type: content_type_for_name(&row.get::<_, String>(1)?).into(),
         kind: if is_archive {
             "archive".into()
         } else if is_log {
@@ -2182,15 +2314,46 @@ fn indexed_file(path: &Path, root: &str) -> Option<IndexedFile> {
 }
 
 fn enrich_visible_metadata(items: &mut [SearchResultItem]) {
-    for item in items {
-        let Ok(metadata) = fs::metadata(&item.path) else {
-            continue;
-        };
-        if !metadata.is_file() {
-            continue;
+    if items.is_empty() {
+        return;
+    }
+    let workers = items.len().min(METADATA_WORKERS_MAX);
+    let chunk_size = (items.len() + workers - 1) / workers;
+    std::thread::scope(|scope| {
+        for chunk in items.chunks_mut(chunk_size) {
+            scope.spawn(move || {
+                for item in chunk {
+                    let Ok(metadata) = fs::metadata(&item.path) else {
+                        continue;
+                    };
+                    if !metadata.is_file() {
+                        continue;
+                    }
+                    item.size = metadata.len();
+                    item.modified_ms = metadata.modified().ok().and_then(system_time_ms);
+                    item.readable = fs::File::open(&item.path).is_ok();
+                }
+            });
         }
-        item.size = metadata.len();
-        item.modified_ms = metadata.modified().ok().and_then(system_time_ms);
+    });
+}
+
+fn content_type_for_name(name: &str) -> &'static str {
+    let extension = Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "zip" => "application/zip",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
+        "tar" => "application/x-tar",
+        "gz" | "tgz" => "application/gzip",
+        "bz2" | "tbz2" => "application/x-bzip2",
+        "xz" | "txz" => "application/x-xz",
+        "log" | "txt" | "out" | "err" | "trace" | "json" | "xml" | "yaml" | "yml" => "text/plain",
+        _ => "application/octet-stream",
     }
 }
 
@@ -2463,6 +2626,159 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn visible_metadata_is_enriched_without_reading_file_contents() {
+        let directory = test_directory("visible-metadata");
+        let path = directory.join("service.log");
+        fs::write(&path, b"metadata-only").unwrap();
+        let mut items = vec![SearchResultItem {
+            path: path.to_string_lossy().into_owned(),
+            name: "service.log".into(),
+            parent: directory.to_string_lossy().into_owned(),
+            kind: "log".into(),
+            size: 0,
+            modified_ms: None,
+            readable: false,
+            content_type: content_type_for_name("service.log").into(),
+            is_log: true,
+            is_archive: false,
+        }];
+
+        enrich_visible_metadata(&mut items);
+
+        assert_eq!(items[0].size, 13);
+        assert!(items[0].modified_ms.is_some());
+        assert!(items[0].readable);
+        assert_eq!(items[0].content_type, "text/plain");
+        assert_eq!(content_type_for_name("bundle.zip"), "application/zip");
+        assert_eq!(
+            content_type_for_name("unknown.bin"),
+            "application/octet-stream"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn query_snapshot_switch_is_atomic_and_recovers_interrupted_rebuild() {
+        let directory = test_directory("atomic-query-snapshot");
+        let manager = FileSearchManager::new(directory.clone());
+        manager
+            .query_index
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .add_batch(&[SearchIndexEntry {
+                path: "D:\\logs\\stable-old.log".into(),
+                name: "stable-old.log".into(),
+                is_log: true,
+                is_archive: false,
+            }])
+            .unwrap();
+        manager.commit_query_index().unwrap();
+        manager.query_index_ready.store(true, Ordering::Release);
+
+        manager.begin_query_index_bulk().unwrap();
+        manager
+            .index_files(&[IndexedFile {
+                path: "D:\\logs\\replacement-new.log".into(),
+                name: "replacement-new.log".into(),
+                root: "D:\\".into(),
+                size: 1,
+                modified_ms: None,
+                is_log: true,
+                is_archive: false,
+                file_id: None,
+                parent_id: None,
+            }])
+            .unwrap();
+        let (_, old_total) = manager
+            .query_tantivy(&["stable".into()], "log", 0, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_total, 1, "旧快照应在新快照完成前保持可查询");
+        manager.finish_query_index_bulk().unwrap();
+        let (_, new_total) = manager
+            .query_tantivy(&["replacement".into()], "log", 0, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(new_total, 1);
+        let (_, old_total) = manager
+            .query_tantivy(&["stable".into()], "log", 0, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_total, 0);
+
+        manager.begin_query_index_bulk().unwrap();
+        drop(manager);
+        let recovered = FileSearchManager::new(directory.clone());
+        recovered.query_index_ready.store(true, Ordering::Release);
+        let (_, new_total) = recovered
+            .query_tantivy(&["replacement".into()], "log", 0, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(new_total, 1, "中断重建后应恢复上一份完整快照");
+        assert!(!query_index_staging_path(&recovered.query_index_path).exists());
+        drop(recovered);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn provider_switch_deduplicates_paths_and_removes_stale_results() {
+        let directory = test_directory("provider-switch");
+        let file_path = directory.join("service.log");
+        fs::write(&file_path, b"first").unwrap();
+        let manager = FileSearchManager::new(directory.clone());
+        manager.query_index_ready.store(true, Ordering::Release);
+        let root = directory.to_string_lossy().into_owned();
+        let make_file = |size| IndexedFile {
+            path: file_path.to_string_lossy().into_owned(),
+            name: "service.log".into(),
+            root: root.clone(),
+            size,
+            modified_ms: None,
+            is_log: true,
+            is_archive: false,
+            file_id: None,
+            parent_id: None,
+        };
+
+        let mut connection = open_database(&manager.db_path).unwrap();
+        write_batch(&mut connection, &[make_file(5)]).unwrap();
+        manager.index_files(&[make_file(5)]).unwrap();
+        manager.commit_query_index().unwrap();
+        write_batch(&mut connection, &[make_file(9)]).unwrap();
+        manager.index_files(&[make_file(9)]).unwrap();
+        manager.commit_query_index().unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, u64>(0))
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        let (_, total) = manager
+            .query_tantivy(&["service".into()], "log", 0, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(total, 1);
+
+        fs::remove_file(&file_path).unwrap();
+        let config = SearchConfig {
+            enabled: true,
+            roots: vec![root],
+            exclusions: Vec::new(),
+        };
+        apply_event_paths(&manager.db_path, &config, &[file_path]).unwrap();
+        manager.drain_query_index_changes().unwrap();
+        assert!(manager
+            .query_tantivy(&["service".into()], "log", 0, 10)
+            .unwrap()
+            .is_none());
+        drop(manager);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -3123,7 +3439,7 @@ mod tests {
         let enumerated_at = started.elapsed();
         let mut first_index = None;
         let (_, records) =
-            resolve_mft_files_in_batches_retain(&root, records, SCAN_WRITE_BATCH, |entries| {
+            resolve_mft_files_in_batches_retain(&root, records, NTFS_RESOLVE_BATCH, |entries| {
                 let files = entries
                     .into_iter()
                     .map(|entry| indexed_mft_entry(&root, entry))
@@ -3161,7 +3477,7 @@ mod tests {
             .pragma_update(None, "cache_size", -65_536)
             .unwrap();
         let (_, records) =
-            resolve_mft_files_in_batches_retain(&root, records, SCAN_WRITE_BATCH, |entries| {
+            resolve_mft_files_in_batches_retain(&root, records, NTFS_RESOLVE_BATCH, |entries| {
                 let files = entries
                     .into_iter()
                     .map(|entry| indexed_mft_entry(&root, entry))

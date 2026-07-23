@@ -43,14 +43,22 @@ let pendingUpdate: Update | null = null;
 let sessionOpenQueue: Promise<void> = Promise.resolve();
 
 // Start listening before any session opens so fast jobs can be replayed to late subscribers.
-const progressListenerReady = listen<IndexProgress>('index-progress', (event) => {
-  indexProgress.publish(event.payload);
-});
-const encodingListenerReady = listen<EncodingProgress>('encoding-progress', (event) => {
-  const progress = event.payload;
-  latestEncodingProgress.set(progress.sessionId, progress);
-  encodingSubscribers.get(progress.sessionId)?.forEach((subscriber) => subscriber(progress));
-});
+// Browser tests import this module as part of the shared API surface, so do not call into the
+// injected Tauri bridge until that bridge actually exists.
+const hasTauriBridge =
+  typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+const progressListenerReady = hasTauriBridge
+  ? listen<IndexProgress>('index-progress', (event) => {
+      indexProgress.publish(event.payload);
+    })
+  : Promise.resolve(() => {});
+const encodingListenerReady = hasTauriBridge
+  ? listen<EncodingProgress>('encoding-progress', (event) => {
+      const progress = event.payload;
+      latestEncodingProgress.set(progress.sessionId, progress);
+      encodingSubscribers.get(progress.sessionId)?.forEach((subscriber) => subscriber(progress));
+    })
+  : Promise.resolve(() => {});
 
 interface RawChild {
   id: string;
@@ -391,6 +399,10 @@ export const tauriApi = {
 
   async setFileSearchExclusions(exclusions: string[]): Promise<void> {
     await invoke('set_file_search_exclusions', { exclusions });
+  },
+
+  async repairFileSearchService(): Promise<void> {
+    await invoke('repair_file_search_service');
   },
 
   searchFiles(

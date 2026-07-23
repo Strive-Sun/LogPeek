@@ -19,8 +19,7 @@ export const en = {
   'search.startDescription':
     'LogCrate will index file names and paths on readable local fixed drives. File contents are not read or uploaded.',
   'search.start': 'Start indexing',
-  'search.scanning':
-    'Indexing: {discovered} MFT records found; {searchable} files are searchable.',
+  'search.scanning': 'Indexing: {discovered} MFT records found; {searchable} files are searchable.',
   'search.finalizing': 'Optimizing the search index…',
   'search.ready': '{count} files indexed',
   'search.paused': 'Indexing paused at {count} files',
@@ -37,6 +36,8 @@ export const en = {
   'search.provider.windowsNtfs': 'NTFS fast index',
   'search.provider.folderScan': 'Compatible folder scan',
   'search.provider.fallback': 'Fast index unavailable: {reason}',
+  'search.repairService': 'Repair NTFS index service',
+  'search.repairingService': 'Repairing index service…',
   'search.exclusions': 'Excluded folders',
   'search.noExclusions': 'No excluded folders',
   'search.addExclusion': 'Exclude a folder',
@@ -236,6 +237,8 @@ export const zhCN: MessageDictionary = {
   'search.provider.windowsNtfs': 'NTFS 快速索引',
   'search.provider.folderScan': '兼容目录扫描',
   'search.provider.fallback': '快速索引不可用：{reason}',
+  'search.repairService': '修复 NTFS 索引服务',
+  'search.repairingService': '正在修复索引服务…',
   'search.exclusions': '排除的目录',
   'search.noExclusions': '没有排除目录',
   'search.addExclusion': '排除一个目录',
