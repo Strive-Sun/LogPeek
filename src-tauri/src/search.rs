@@ -23,7 +23,7 @@ use tauri::Emitter;
 
 const SCHEMA_VERSION: i64 = 8;
 const SCAN_WRITE_BATCH: usize = 8_192;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 const NTFS_RESOLVE_BATCH: usize = 2_048;
 const EVENT_BATCH: usize = 512;
 const EVENT_QUEUE_CAPACITY: usize = 4096;
@@ -2076,7 +2076,7 @@ fn write_batch(connection: &mut Connection, files: &[IndexedFile]) -> anyhow::Re
     write_files(connection, files, true)
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn insert_batch(connection: &mut Connection, files: &[IndexedFile]) -> anyhow::Result<()> {
     write_files(connection, files, false)
 }
