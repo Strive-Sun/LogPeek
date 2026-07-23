@@ -3,7 +3,7 @@ name = "logpeek"
 autobins = false
 default-run = "logcrate"
 # 应用版本的唯一人工维护来源；Tauri 配置省略 version 后会自动读取此值。
-version = "1.0.11"
+version = "1.0.12"
 description = "免解压跨平台桌面日志阅读器"
 authors = ["LogCrate"]
 edition = "2021"
