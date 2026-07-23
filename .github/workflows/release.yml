@@ -5,6 +5,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的现有版本标签（例如 v1.0.13）'
+        required: true
+        type: string
 
 # 允许 workflow 创建 Release、上传资产
 permissions:
@@ -24,6 +30,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: 安装 Node
         uses: actions/setup-node@v4
@@ -51,6 +59,8 @@ jobs:
 
       - name: 校验并生成发行说明
         id: release_notes
+        env:
+          GITHUB_REF_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: node scripts/release-notes.mjs --github-output
 
       - name: 校验更新签名配置
@@ -70,8 +80,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'LogCrate ${{ github.ref_name }}'
+          tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          releaseName: LogCrate ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseBody: ${{ steps.release_notes.outputs.body }}
           # 自动发布(非草稿):Release 跑完即公开,点进 tag/Releases 页面可直接下载安装包
           releaseDraft: false
