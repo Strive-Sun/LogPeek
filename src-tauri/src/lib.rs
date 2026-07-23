@@ -73,6 +73,11 @@ fn tray_click_action(is_left_button: bool, is_released: bool) -> LifecycleAction
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn reopen_action() -> LifecycleAction {
+    LifecycleAction::ShowMainWindow
+}
+
 fn create_archive_cache(cache_root: &std::path::Path) -> PathBuf {
     let archive_root = cache_root.join("nested-archives");
     let current = archive_root.join(format!("run-{}", std::process::id()));
@@ -935,7 +940,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
@@ -1064,8 +1069,20 @@ pub fn run() {
             close_log_session,
             set_app_locale
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            if reopen_action() == LifecycleAction::ShowMainWindow {
+                show_main_window(app_handle);
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = (app_handle, event);
+    });
 }
 
 #[cfg(test)]
@@ -1141,6 +1158,11 @@ mod lifecycle_tests {
             menu_action(SHOW_MAIN_MENU_ID),
             LifecycleAction::ShowMainWindow
         );
+    }
+
+    #[test]
+    fn macos_reopen_restores_the_existing_main_window() {
+        assert_eq!(reopen_action(), LifecycleAction::ShowMainWindow);
     }
 
     #[test]
