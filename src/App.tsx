@@ -125,6 +125,7 @@ export function App() {
   );
   const [theme, setTheme] = useState<'dark' | 'light'>('light');
   const [fileSearchOpen, setFileSearchOpen] = useState(false);
+  const [fileSearchMounted, setFileSearchMounted] = useState(false);
   const [searchFeature, setSearchFeature] = useState<FileSearchFeatureState | null>(null);
   const [searchPreferenceSaving, setSearchPreferenceSaving] = useState(false);
   const [appVersion, setAppVersion] = useState('…');
@@ -423,6 +424,8 @@ export function App() {
   }, []);
 
   const openFileSearch = useCallback(() => {
+    if (!searchFeature?.currentEnabled) return;
+    setFileSearchMounted(true);
     setFileSearchOpen((current) => nextSearchOpen(current, searchFeature));
   }, [searchFeature]);
 
@@ -1308,24 +1311,27 @@ export function App() {
         />
       ) : null}
 
-      {fileSearchOpen && (
-        <FileSearchPanel
-          onClose={() => setFileSearchOpen(false)}
-          onOpenEntry={(entryKey) => void openEntry(entryKey)}
-          onMonitorAdded={async (item: FileSearchResult) => {
-            await refreshTree();
-            await revealNewItem(
-              {
-                id: item.path,
-                name: item.name,
-                kind: item.isArchive ? 'archive' : 'file',
-                source: item.parent,
-                age: 'now',
-              },
-              { openFile: false },
-            );
-          }}
-        />
+      {fileSearchMounted && (
+        <div className="file-search-keep-alive" hidden={!fileSearchOpen}>
+          <FileSearchPanel
+            active={fileSearchOpen}
+            onClose={() => setFileSearchOpen(false)}
+            onOpenEntry={(entryKey) => void openEntry(entryKey)}
+            onMonitorAdded={async (item: FileSearchResult) => {
+              await refreshTree();
+              await revealNewItem(
+                {
+                  id: item.path,
+                  name: item.name,
+                  kind: item.isArchive ? 'archive' : 'file',
+                  source: item.parent,
+                  age: 'now',
+                },
+                { openFile: false },
+              );
+            }}
+          />
+        </div>
       )}
 
       <div className="cols">

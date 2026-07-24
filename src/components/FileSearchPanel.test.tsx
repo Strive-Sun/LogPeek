@@ -119,14 +119,11 @@ async function renderPanel(overrides?: {
     alreadyMonitored: boolean;
   }>;
 }) {
-  const [{ fireEvent, render, screen, waitFor }, React, { api }, { FileSearchPanel }, i18n] =
-    await Promise.all([
-      import('@testing-library/react'),
-      import('react'),
-      import('../api'),
-      import('./FileSearchPanel'),
-      import('../i18n/I18nProvider'),
-    ]);
+  const { fireEvent, render, screen, waitFor } = await import('@testing-library/react');
+  const React = await import('react');
+  const { api } = await import('../api');
+  const { FileSearchPanel } = await import('./FileSearchPanel');
+  const i18n = await import('../i18n/I18nProvider');
   let searchCalls = 0;
   let monitorCalls = 0;
   const original = {

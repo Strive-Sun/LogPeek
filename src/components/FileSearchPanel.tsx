@@ -23,6 +23,7 @@ const PAGE_SIZE = 200;
 const MAX_VISIBLE_RESULTS = 1_000;
 
 interface Props {
+  active?: boolean;
   onClose: () => void;
   onOpenEntry: (entryKey: string) => void;
   onMonitorAdded: (item: FileSearchResult) => Promise<void>;
@@ -74,6 +75,7 @@ function resultIcon(item: FileSearchResult) {
 }
 
 export function FileSearchPanel({
+  active = true,
   onClose,
   onOpenEntry,
   onMonitorAdded,
@@ -99,10 +101,11 @@ export function FileSearchPanel({
   const [menu, setMenu] = useState<{ x: number; y: number; item: FileSearchResult } | null>(null);
   const [archive, setArchive] = useState<ArchiveView | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const programmaticFocus = useRef(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const queryGeneration = useRef(0);
-  const previousFocus = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null);
   const progressRefreshKey = searchProgressRefreshKey(status);
+  const searchUiReady = status !== null && config !== null;
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -121,7 +124,6 @@ export function FileSearchPanel({
 
   useEffect(() => {
     let active = true;
-    const focusToRestore = previousFocus.current;
     void Promise.all([api.fileSearchStatus(), api.fileSearchConfig()])
       .then(([nextStatus, nextConfig]) => {
         if (!active) return;
@@ -133,13 +135,20 @@ export function FileSearchPanel({
       setStatus(next);
       setConfig((current) => (current ? { ...current, exclusions: next.exclusions } : current));
     });
-    window.setTimeout(() => inputRef.current?.focus(), 0);
     return () => {
       active = false;
       unsubscribe();
-      focusToRestore?.focus();
     };
   }, []);
+
+  useEffect(() => {
+    if (!active || !searchUiReady) return;
+    const focusToRestore = document.activeElement as HTMLElement | null;
+    programmaticFocus.current = true;
+    inputRef.current?.focus();
+    programmaticFocus.current = false;
+    return () => focusToRestore?.focus();
+  }, [active, searchUiReady]);
 
   const executeQuery = useCallback(
     async (offset: number, append: boolean, preserveError = false) => {
@@ -358,7 +367,9 @@ export function FileSearchPanel({
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t('search.placeholder')}
             aria-label={t('search.placeholder')}
-            onFocus={(event) => event.currentTarget.select()}
+            onFocus={(event) => {
+              if (!programmaticFocus.current) event.currentTarget.select();
+            }}
           />
           {query && (
             <button

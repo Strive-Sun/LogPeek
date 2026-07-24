@@ -24,7 +24,10 @@ use tokio::sync::Notify;
 use watcher::{DetectedItem, DirectoryChange, DirectoryChangeBatch, DroppedFileInfo, WatchState};
 
 #[cfg(desktop)]
-use search::{FileSearchManager, SearchConfig, SearchFeatureState, SearchPage, SearchStatus};
+use search::{
+    FileSearchManager, SearchConfig, SearchFeatureState, SearchPage, SearchPreferenceStore,
+    SearchStatus,
+};
 #[cfg(desktop)]
 use startup::StartupRenderer;
 use tauri::menu::MenuItem;
@@ -116,9 +119,47 @@ struct ReadyAppState {
     sessions: Arc<SessionManager>,
     archive_cache: PathBuf,
     #[cfg(desktop)]
-    search: Arc<FileSearchManager>,
-    #[cfg(desktop)]
-    search_enabled: bool,
+    search: Arc<SearchRuntime>,
+}
+
+#[cfg(desktop)]
+struct SearchRuntime {
+    preferences: SearchPreferenceStore,
+    current_enabled: bool,
+    manager: OnceLock<Result<Arc<FileSearchManager>, String>>,
+    manager_notify: Notify,
+}
+
+#[cfg(desktop)]
+impl SearchRuntime {
+    fn new(preferences: SearchPreferenceStore) -> Self {
+        let current_enabled = preferences.config().enabled;
+        Self {
+            preferences,
+            current_enabled,
+            manager: OnceLock::new(),
+            manager_notify: Notify::new(),
+        }
+    }
+
+    fn publish_manager(&self, manager: Result<Arc<FileSearchManager>, String>) {
+        if self.manager.set(manager).is_ok() {
+            self.manager_notify.notify_waiters();
+        }
+    }
+
+    async fn manager(&self) -> Result<Arc<FileSearchManager>, String> {
+        loop {
+            if let Some(manager) = self.manager.get() {
+                return manager.clone();
+            }
+            let notified = self.manager_notify.notified();
+            if let Some(manager) = self.manager.get() {
+                return manager.clone();
+            }
+            notified.await;
+        }
+    }
 }
 
 #[cfg(desktop)]
@@ -126,11 +167,17 @@ const SEARCH_DISABLED_ERROR: &str = "SEARCH_DISABLED:请在设置中启用文件
 
 #[cfg(desktop)]
 fn ensure_search_enabled(state: &ReadyAppState) -> Result<(), String> {
-    if state.search_enabled {
+    if state.search.current_enabled {
         Ok(())
     } else {
         Err(SEARCH_DISABLED_ERROR.into())
     }
+}
+
+#[cfg(desktop)]
+async fn ready_search(state: &ReadyAppState) -> Result<Arc<FileSearchManager>, String> {
+    ensure_search_enabled(state)?;
+    state.search.manager().await
 }
 
 #[derive(Clone, Default)]
@@ -390,16 +437,14 @@ async fn inspect_dropped_file(
 #[tauri::command]
 async fn file_search_status(state: State<'_, AppState>) -> Result<SearchStatus, String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    Ok(state.search.status())
+    Ok(ready_search(state).await?.status())
 }
 
 #[cfg(desktop)]
 #[tauri::command]
 async fn file_search_config(state: State<'_, AppState>) -> Result<SearchConfig, String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    Ok(state.search.config())
+    Ok(ready_search(state).await?.config())
 }
 
 #[cfg(desktop)]
@@ -408,7 +453,10 @@ async fn file_search_feature_state(
     state: State<'_, AppState>,
 ) -> Result<SearchFeatureState, String> {
     let state = state.ready().await;
-    Ok(state.search.feature_state(state.search_enabled))
+    Ok(state
+        .search
+        .preferences
+        .feature_state(state.search.current_enabled))
 }
 
 #[cfg(desktop)]
@@ -420,9 +468,13 @@ async fn set_file_search_enabled(
     let state = state.ready().await;
     state
         .search
-        .set_enabled_preference(enabled)
+        .preferences
+        .set_enabled(enabled)
         .map_err(|error| error.to_string())?;
-    Ok(state.search.feature_state(state.search_enabled))
+    Ok(state
+        .search
+        .preferences
+        .feature_state(state.search.current_enabled))
 }
 
 #[cfg(desktop)]
@@ -433,9 +485,8 @@ async fn start_file_search_index(
     rebuild: bool,
 ) -> Result<(), String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    state
-        .search
+    ready_search(state)
+        .await?
         .start(app, rebuild)
         .map_err(|error| error.to_string())
 }
@@ -447,8 +498,7 @@ async fn pause_file_search_index(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    state.search.pause(&app);
+    ready_search(state).await?.pause(&app);
     Ok(())
 }
 
@@ -459,8 +509,10 @@ async fn clear_file_search_index(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    state.search.clear(&app).map_err(|error| error.to_string())
+    ready_search(state)
+        .await?
+        .clear(&app)
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(desktop)]
@@ -471,9 +523,8 @@ async fn set_file_search_exclusions(
     exclusions: Vec<String>,
 ) -> Result<(), String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    state
-        .search
+    ready_search(state)
+        .await?
         .set_exclusions(app, exclusions)
         .map_err(|error| error.to_string())
 }
@@ -482,7 +533,7 @@ async fn set_file_search_exclusions(
 #[tauri::command]
 async fn repair_file_search_service(state: State<'_, AppState>) -> Result<(), String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
+    let _search = ready_search(state).await?;
     #[cfg(windows)]
     {
         tauri::async_runtime::spawn_blocking(crate::ntfs::ipc::repair_service)
@@ -506,8 +557,7 @@ async fn search_files(
     limit: u32,
 ) -> Result<SearchPage, String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
-    let search = state.search.clone();
+    let search = ready_search(state).await?;
     tauri::async_runtime::spawn_blocking(move || search.query(&query, &filter, offset, limit))
         .await
         .map_err(|error| error.to_string())?
@@ -521,11 +571,11 @@ async fn inspect_search_result(
     path: String,
 ) -> Result<DroppedFileInfo, String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
+    let search = ready_search(state).await?;
     match state.watch.inspect_dropped_file(&path) {
         Ok(info) => Ok(info),
         Err(error) => {
-            let _ = state.search.remove_stale_path(&path);
+            let _ = search.remove_stale_path(&path);
             Err(error.to_string())
         }
     }
@@ -539,10 +589,10 @@ async fn add_search_result_parent(
     path: String,
 ) -> Result<String, String> {
     let state = state.ready().await;
-    ensure_search_enabled(state)?;
+    let search = ready_search(state).await?;
     let file = PathBuf::from(&path);
     if !file.is_file() {
-        let _ = state.search.remove_stale_path(&path);
+        let _ = search.remove_stale_path(&path);
         return Err("文件已被删除或移动".into());
     }
     let parent = file
@@ -1065,21 +1115,33 @@ pub fn run() {
                 sessions.set_cache_dir(cache_dir.clone());
                 let archive_root = cache_dir.join("nested-archives");
                 let archive_cache = create_archive_cache(&cache_dir);
-                let search = FileSearchManager::new(config_dir.join("file-search"));
-                let search_enabled = search.config().enabled;
+                let search_dir = config_dir.join("file-search");
+                let search_preferences = SearchPreferenceStore::new(search_dir.clone());
+                let search = Arc::new(SearchRuntime::new(search_preferences.clone()));
                 state.publish(ReadyAppState {
                     watch: watch.clone(),
                     sessions,
                     archive_cache: archive_cache.clone(),
                     search: search.clone(),
-                    search_enabled,
                 });
 
                 for dir in watch.list_dirs() {
                     let _ = spawn_watch(&watch, &app_handle, &dir);
                 }
-                if search_enabled {
-                    let _ = search.resume_or_watch(app_handle.clone());
+                if search.current_enabled {
+                    tauri::async_runtime::spawn(async move {
+                        let manager = tauri::async_runtime::spawn_blocking(move || {
+                            let manager = FileSearchManager::new_with_preferences(
+                                search_dir,
+                                &search_preferences,
+                            );
+                            let _ = manager.resume_or_watch(app_handle);
+                            manager
+                        })
+                        .await
+                        .map_err(|error| format!("搜索模块初始化失败：{error}"));
+                        search.publish_manager(manager);
+                    });
                 }
                 cleanup_stale_archive_caches(&archive_root, &archive_cache);
             });
@@ -1236,6 +1298,63 @@ mod lifecycle_tests {
         assert!(current.exists());
         assert!(!stale.exists());
         assert!(!legacy_file.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn core_state_is_ready_without_constructing_search_manager() {
+        let root = std::env::temp_dir().join(format!(
+            "logcrate-deferred-search-core-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let search_dir = root.join("search");
+        let search = Arc::new(SearchRuntime::new(SearchPreferenceStore::new(
+            search_dir.clone(),
+        )));
+        let state = AppState::default();
+        state.publish(ReadyAppState {
+            watch: WatchState::new(root.join("watch.json")),
+            sessions: Arc::new(SessionManager::default()),
+            archive_cache: root.join("archive-cache"),
+            search,
+        });
+
+        let ready = state.ready().await;
+        assert!(ready.search.manager.get().is_none());
+        assert!(!search_dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(desktop)]
+    #[tokio::test]
+    async fn search_commands_can_wait_for_deferred_manager_result() {
+        let root = std::env::temp_dir().join(format!(
+            "logcrate-deferred-search-wait-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let preferences = SearchPreferenceStore::new(root.clone());
+        preferences.set_enabled(true).unwrap();
+        let search = Arc::new(SearchRuntime::new(preferences));
+        let waiting_search = search.clone();
+        let waiter = tokio::spawn(async move { waiting_search.manager().await });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+
+        search.publish_manager(Err("deferred search failed".into()));
+        assert_eq!(
+            waiter.await.unwrap().err().as_deref(),
+            Some("deferred search failed")
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

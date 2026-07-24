@@ -134,6 +134,46 @@ pub struct SearchFeatureState {
     pub next_launch_enabled: bool,
 }
 
+#[derive(Clone)]
+pub struct SearchPreferenceStore {
+    config_path: PathBuf,
+    config: Arc<Mutex<SearchConfig>>,
+}
+
+impl SearchPreferenceStore {
+    pub fn new(data_dir: PathBuf) -> Self {
+        let config_path = data_dir.join("file-search.json");
+        let config = read_config(&config_path).unwrap_or_default();
+        Self {
+            config_path,
+            config: Arc::new(Mutex::new(config)),
+        }
+    }
+
+    pub fn config(&self) -> SearchConfig {
+        self.config.lock().unwrap().clone()
+    }
+
+    pub fn feature_state(&self, current_enabled: bool) -> SearchFeatureState {
+        SearchFeatureState {
+            current_enabled,
+            next_launch_enabled: self.config.lock().unwrap().enabled,
+        }
+    }
+
+    pub fn set_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+        let mut config = self.config.lock().unwrap();
+        let previous = config.enabled;
+        config.enabled = enabled;
+        config.version = search_config_version();
+        if let Err(error) = write_config(&self.config_path, &config) {
+            config.enabled = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchStatus {
@@ -214,7 +254,7 @@ pub struct FileSearchManager {
     db_path: PathBuf,
     config_path: PathBuf,
     query_index_path: PathBuf,
-    config: Mutex<SearchConfig>,
+    config: Arc<Mutex<SearchConfig>>,
     status: Mutex<SearchStatus>,
     generation: AtomicU64,
     cancel: AtomicBool,
@@ -230,12 +270,22 @@ pub struct FileSearchManager {
 }
 
 impl FileSearchManager {
+    #[cfg(test)]
     pub fn new(data_dir: PathBuf) -> Arc<Self> {
+        let preferences = SearchPreferenceStore::new(data_dir.clone());
+        Self::new_with_preferences(data_dir, &preferences)
+    }
+
+    pub fn new_with_preferences(
+        data_dir: PathBuf,
+        preferences: &SearchPreferenceStore,
+    ) -> Arc<Self> {
         let _ = fs::create_dir_all(&data_dir);
-        let config_path = data_dir.join("file-search.json");
+        let config_path = preferences.config_path.clone();
         let query_index_path = data_dir.join("file-search-orange-gpl-v1");
         let _ = recover_query_index_directories(&query_index_path);
-        let config = read_config(&config_path).unwrap_or_default();
+        let config_state = preferences.config.clone();
+        let config = config_state.lock().unwrap().clone();
         let mut status = SearchStatus::disabled(&config);
         if config.enabled && data_dir.join("file-search.sqlite3").is_file() {
             status.phase = "ready".into();
@@ -253,7 +303,7 @@ impl FileSearchManager {
             db_path: data_dir.join("file-search.sqlite3"),
             config_path,
             query_index_path,
-            config: Mutex::new(config),
+            config: config_state,
             status: Mutex::new(status),
             generation: AtomicU64::new(0),
             cancel: AtomicBool::new(false),
@@ -303,25 +353,6 @@ impl FileSearchManager {
 
     pub fn config(&self) -> SearchConfig {
         self.config.lock().unwrap().clone()
-    }
-
-    pub fn feature_state(&self, current_enabled: bool) -> SearchFeatureState {
-        SearchFeatureState {
-            current_enabled,
-            next_launch_enabled: self.config.lock().unwrap().enabled,
-        }
-    }
-
-    pub fn set_enabled_preference(&self, enabled: bool) -> anyhow::Result<()> {
-        let mut config = self.config.lock().unwrap();
-        let previous = config.enabled;
-        config.enabled = enabled;
-        config.version = search_config_version();
-        if let Err(error) = write_config(&self.config_path, &config) {
-            config.enabled = previous;
-            return Err(error);
-        }
-        Ok(())
     }
 
     fn runtime_config(&self) -> SearchConfig {
@@ -434,9 +465,6 @@ impl FileSearchManager {
 
     pub fn resume_or_watch(self: &Arc<Self>, app: tauri::AppHandle) -> anyhow::Result<()> {
         let config = self.runtime_config();
-        if !config.enabled {
-            return Ok(());
-        }
         let has_persisted_files = self.status.lock().unwrap().indexed_files > 0;
         let has_search_snapshot = self.query_index_ready.load(Ordering::Acquire);
         if self.db_path.is_file() && (has_persisted_files || has_search_snapshot) {
@@ -2713,15 +2741,14 @@ mod tests {
     fn invalid_search_config_safely_falls_back_to_disabled() {
         let directory = test_directory("invalid-config");
         fs::write(directory.join("file-search.json"), b"not-json").unwrap();
-        let manager = FileSearchManager::new(directory.clone());
+        let preferences = SearchPreferenceStore::new(directory.clone());
         assert_eq!(
-            manager.feature_state(false),
+            preferences.feature_state(false),
             SearchFeatureState {
                 current_enabled: false,
                 next_launch_enabled: false,
             }
         );
-        drop(manager);
         let _ = fs::remove_dir_all(directory);
     }
 
@@ -2743,18 +2770,15 @@ mod tests {
     #[test]
     fn enabled_preference_is_separate_from_current_process_state() {
         let directory = test_directory("feature-state");
-        let manager = FileSearchManager::new(directory.clone());
-        manager.set_enabled_preference(true).unwrap();
+        let preferences = SearchPreferenceStore::new(directory.clone());
+        preferences.set_enabled(true).unwrap();
         assert_eq!(
-            manager.feature_state(false),
+            preferences.feature_state(false),
             SearchFeatureState {
                 current_enabled: false,
                 next_launch_enabled: true,
             }
         );
-        assert_eq!(manager.generation.load(Ordering::Relaxed), 0);
-        assert!(manager.watcher.lock().unwrap().is_none());
-        drop(manager);
         let persisted = read_config(&directory.join("file-search.json")).unwrap();
         assert!(persisted.enabled);
         let _ = fs::remove_dir_all(directory);
@@ -2763,12 +2787,21 @@ mod tests {
     #[test]
     fn failed_preference_write_restores_previous_value() {
         let directory = test_directory("preference-write-failure");
-        let manager = FileSearchManager::new(directory.clone());
-        fs::create_dir(&manager.config_path).unwrap();
-        assert!(manager.set_enabled_preference(true).is_err());
-        assert!(!manager.feature_state(false).next_launch_enabled);
-        drop(manager);
+        let preferences = SearchPreferenceStore::new(directory.clone());
+        fs::create_dir(&preferences.config_path).unwrap();
+        assert!(preferences.set_enabled(true).is_err());
+        assert!(!preferences.feature_state(false).next_launch_enabled);
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn disabled_preference_read_does_not_create_search_storage() {
+        let parent = test_directory("lightweight-preference");
+        let search_dir = parent.join("search");
+        let preferences = SearchPreferenceStore::new(search_dir.clone());
+        assert!(!preferences.config().enabled);
+        assert!(!search_dir.exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
