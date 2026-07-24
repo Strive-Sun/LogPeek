@@ -73,7 +73,7 @@ mod tests {
     impl Fixture {
         fn new(name: &str, bytes: &[u8]) -> Self {
             let dir = std::env::temp_dir().join(format!(
-                "logpeek-plain-test-{}-{}",
+                "logcrate-plain-test-{}-{}",
                 std::process::id(),
                 FILE_SEQ.fetch_add(1, Ordering::Relaxed)
             ));

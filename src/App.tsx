@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { api, isTauri } from './api';
+import { whenStartupInteractive } from './startup';
 import type {
   AppUpdateInfo,
   AppUpdateProgress,
@@ -214,8 +215,7 @@ export function App() {
 
   // 左栏宽度(可拖动调整),持久化到 localStorage
   const [treeWidth, setTreeWidth] = useState<number>(() => {
-    // Legacy key is intentionally retained so LogPeek users keep their layout after rebranding.
-    const saved = Number(localStorage.getItem('logpeek.treeWidth'));
+    const saved = Number(localStorage.getItem('logcrate.treeWidth'));
     return saved >= 160 && saved <= 720 ? saved : 300;
   });
 
@@ -362,13 +362,15 @@ export function App() {
   }, [finishMacOsFileAccessOnboarding, openMacOsFileAccessSettings]);
 
   useEffect(() => {
-    if (autoCheckStarted.current) return;
-    autoCheckStarted.current = true;
-    if (autoCheckUpdates) void checkForUpdates(true);
+    void whenStartupInteractive().then(() => {
+      if (autoCheckStarted.current) return;
+      autoCheckStarted.current = true;
+      if (autoCheckUpdates) void checkForUpdates(true);
+    });
   }, [autoCheckUpdates, checkForUpdates]);
 
   useEffect(() => {
-    localStorage.setItem('logpeek.treeWidth', String(treeWidth));
+    localStorage.setItem('logcrate.treeWidth', String(treeWidth));
   }, [treeWidth]);
 
   useEffect(() => {

@@ -2,5 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    logpeek_lib::run()
+    logcrate_lib::record_process_start();
+    logcrate_lib::run()
 }

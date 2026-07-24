@@ -1,7 +1,7 @@
 use softbuffer::{Context, Surface};
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Window;
 
@@ -13,6 +13,47 @@ const ACCENT: u32 = 0x001a_7fdb;
 #[derive(Clone)]
 pub struct StartupRenderer {
     running: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Default)]
+pub struct StartupHandoff {
+    renderer: Arc<Mutex<Option<StartupRenderer>>>,
+    interactive: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl StartupHandoff {
+    pub fn attach_renderer(&self, renderer: StartupRenderer) {
+        *self
+            .renderer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(renderer);
+    }
+
+    pub fn complete(&self) {
+        if let Some(renderer) = self
+            .renderer
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            renderer.stop();
+        }
+        let (ready, notify) = &*self.interactive;
+        *ready.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        notify.notify_all();
+    }
+
+    pub fn wait_timeout(&self, timeout: Duration) -> bool {
+        let (ready, notify) = &*self.interactive;
+        let ready = ready.lock().unwrap_or_else(|error| error.into_inner());
+        if *ready {
+            return true;
+        }
+        let (ready, _) = notify
+            .wait_timeout_while(ready, timeout, |value| !*value)
+            .unwrap_or_else(|error| error.into_inner());
+        *ready
+    }
 }
 
 impl StartupRenderer {
@@ -34,7 +75,9 @@ impl StartupRenderer {
                 if render_surface(&mut surface, started.elapsed().as_secs_f32()).is_err() {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(16));
+                // 30 FPS is visually smooth for this indeterminate bar and leaves more resources for
+                // WebView cold start than continuous full-window 60 FPS software redraws.
+                std::thread::sleep(Duration::from_millis(33));
             }
         });
         Ok(Self { running })
@@ -234,5 +277,15 @@ mod tests {
         assert!(pixels.contains(&TRACK));
         assert!(pixels.contains(&ACCENT));
         assert!(pixels.contains(&BACKGROUND));
+    }
+
+    #[test]
+    fn startup_handoff_releases_deferred_work_once_interactive() {
+        let handoff = StartupHandoff::default();
+        let waiter = handoff.clone();
+        let thread = std::thread::spawn(move || waiter.wait_timeout(Duration::from_secs(1)));
+        handoff.complete();
+        assert!(thread.join().unwrap());
+        assert!(handoff.wait_timeout(Duration::ZERO));
     }
 }

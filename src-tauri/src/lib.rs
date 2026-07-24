@@ -11,6 +11,7 @@ mod search;
 mod search_index;
 #[cfg(desktop)]
 mod startup;
+mod startup_trace;
 mod watcher;
 
 use archive::{open_archive, resolve_archive_chain, ArchiveEntry};
@@ -29,7 +30,8 @@ use search::{
     SearchStatus,
 };
 #[cfg(desktop)]
-use startup::StartupRenderer;
+use startup::{StartupHandoff, StartupRenderer};
+use startup_trace::StartupTrace;
 use tauri::menu::MenuItem;
 #[cfg(desktop)]
 use tauri::{
@@ -41,8 +43,12 @@ use tauri::{
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
+
+pub fn record_process_start() {
+    startup_trace::record_process_start();
+}
 const SHOW_MAIN_MENU_ID: &str = "show-main-window";
-const EXIT_APP_MENU_ID: &str = "exit-logpeek";
+const EXIT_APP_MENU_ID: &str = "exit-logcrate";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LifecycleAction {
@@ -255,6 +261,15 @@ struct TrayMenuItems {
     exit: MenuItem<tauri::Wry>,
 }
 
+#[derive(Default)]
+struct TrayMenuStateInner {
+    locale: String,
+    items: Option<TrayMenuItems>,
+}
+
+#[derive(Clone, Default)]
+struct TrayMenuState(Arc<std::sync::Mutex<TrayMenuStateInner>>);
+
 fn tray_labels(locale: &str) -> (&'static str, &'static str) {
     if locale == "zh-CN" {
         ("显示主窗口", "退出 LogCrate")
@@ -264,11 +279,33 @@ fn tray_labels(locale: &str) -> (&'static str, &'static str) {
 }
 
 #[tauri::command]
-fn set_app_locale(locale: String, items: State<TrayMenuItems>) -> Result<(), String> {
+fn set_app_locale(locale: String, tray: State<TrayMenuState>) -> Result<(), String> {
     let (show, exit) = tray_labels(&locale);
-    items.show.set_text(show).map_err(|e| e.to_string())?;
-    items.exit.set_text(exit).map_err(|e| e.to_string())?;
+    let mut state = tray.0.lock().unwrap_or_else(|error| error.into_inner());
+    state.locale = locale;
+    if let Some(items) = &state.items {
+        items.show.set_text(show).map_err(|e| e.to_string())?;
+        items.exit.set_text(exit).map_err(|e| e.to_string())?;
+    }
     Ok(())
+}
+
+#[tauri::command]
+fn mark_startup_stage(
+    trace: State<'_, StartupTrace>,
+    handoff: State<'_, StartupHandoff>,
+    stage: String,
+) -> Result<(), String> {
+    match stage.as_str() {
+        "react-mounted" | "interactive-frame" => {
+            trace.mark(&stage);
+            if stage == "interactive-frame" {
+                handoff.complete();
+            }
+            Ok(())
+        }
+        _ => Err("不支持的启动阶段".into()),
+    }
 }
 
 #[derive(Serialize)]
@@ -989,15 +1026,11 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 #[cfg(desktop)]
-fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(
-        app,
-        SHOW_MAIN_MENU_ID,
-        "Show main window",
-        true,
-        None::<&str>,
-    )?;
-    let exit_item = MenuItem::with_id(app, EXIT_APP_MENU_ID, "Exit LogCrate", true, None::<&str>)?;
+fn setup_tray(app: &tauri::AppHandle, tray: &TrayMenuState) -> tauri::Result<()> {
+    let mut state = tray.0.lock().unwrap_or_else(|error| error.into_inner());
+    let (show_label, exit_label) = tray_labels(&state.locale);
+    let show_item = MenuItem::with_id(app, SHOW_MAIN_MENU_ID, show_label, true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(app, EXIT_APP_MENU_ID, exit_label, true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &exit_item])?;
 
     let mut tray = TrayIconBuilder::new()
@@ -1030,7 +1063,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         tray = tray.icon(icon);
     }
     tray.build(app)?;
-    app.manage(TrayMenuItems {
+    state.items = Some(TrayMenuItems {
         show: show_item,
         exit: exit_item,
     });
@@ -1039,6 +1072,9 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let startup_trace = StartupTrace::default();
+    startup_trace.mark("builder-start");
+    let setup_trace = startup_trace.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
@@ -1050,7 +1086,13 @@ pub fn run() {
                 }
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
+            setup_trace.mark("setup-enter");
+            app.manage(setup_trace.clone());
+            let startup_handoff = StartupHandoff::default();
+            app.manage(startup_handoff.clone());
+            let tray_menu_state = TrayMenuState::default();
+            app.manage(tray_menu_state.clone());
             #[cfg(desktop)]
             {
                 let window_config = app
@@ -1064,20 +1106,25 @@ pub fn run() {
                     .resizable(false)
                     .build()?;
                 let startup_renderer = StartupRenderer::start(window.clone())?;
-
-                app.handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())?;
-                setup_tray(app)?;
+                startup_handoff.attach_renderer(startup_renderer);
+                setup_trace.mark("native-first-frame");
 
                 let webview_window = window.clone();
+                let webview_trace = setup_trace.clone();
+                setup_trace.mark("webview-create-requested");
                 std::thread::spawn(move || {
-                    let renderer = startup_renderer.clone();
+                    let page_trace = webview_trace.clone();
                     let webview_builder = WebviewBuilder::from_config(&window_config).on_page_load(
                         move |webview, payload| {
-                            if payload.event() != PageLoadEvent::Finished {
-                                return;
+                            match payload.event() {
+                                PageLoadEvent::Started => {
+                                    page_trace.mark("navigation-started");
+                                    return;
+                                }
+                                PageLoadEvent::Finished => {
+                                    page_trace.mark("navigation-finished");
+                                }
                             }
-                            renderer.stop();
                             let window = webview.window();
                             if let Ok(size) = window.inner_size() {
                                 let _ = webview.set_position(PhysicalPosition::new(0, 0));
@@ -1087,12 +1134,21 @@ pub fn run() {
                             let _ = window.set_resizable(true);
                         },
                     );
-                    let _ = webview_window.add_child(
+                    let result = webview_window.add_child(
                         webview_builder,
                         PhysicalPosition::new(-1, -1),
                         PhysicalSize::new(1, 1),
                     );
+                    webview_trace.mark(if result.is_ok() {
+                        "webview-created"
+                    } else {
+                        "webview-create-failed"
+                    });
                 });
+
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+                setup_trace.mark("updater-registered");
             }
 
             let state = AppState::default();
@@ -1105,9 +1161,9 @@ pub fn run() {
                 .path()
                 .app_cache_dir()
                 .unwrap_or_else(|_| std::env::temp_dir())
-                // Legacy cache directory keeps in-place LogPeek upgrades free of orphaned data.
-                .join("logpeek-cache");
+                .join("logcrate-cache");
             let app_handle = app.handle().clone();
+            let background_trace = setup_trace.clone();
             std::thread::spawn(move || {
                 let _ = std::fs::create_dir_all(&config_dir);
                 let watch = WatchState::new(config_dir.join("watch-config.json"));
@@ -1124,11 +1180,35 @@ pub fn run() {
                     archive_cache: archive_cache.clone(),
                     search: search.clone(),
                 });
+                background_trace.mark("core-state-ready");
+
+                background_trace.mark("deferred-work-waiting");
+                let interactive = startup_handoff.wait_timeout(std::time::Duration::from_secs(30));
+                background_trace.mark(if interactive {
+                    "deferred-work-started"
+                } else {
+                    "deferred-work-timeout"
+                });
+
+                #[cfg(desktop)]
+                {
+                    let main_thread = app_handle.clone();
+                    let tray_handle = app_handle.clone();
+                    let tray_trace = background_trace.clone();
+                    let _ = main_thread.run_on_main_thread(move || {
+                        if setup_tray(&tray_handle, &tray_menu_state).is_ok() {
+                            tray_trace.mark("tray-ready");
+                        }
+                    });
+                    background_trace.mark("tray-scheduled");
+                }
 
                 for dir in watch.list_dirs() {
                     let _ = spawn_watch(&watch, &app_handle, &dir);
                 }
+                background_trace.mark("watchers-scheduled");
                 if search.current_enabled {
+                    background_trace.mark("search-scheduled");
                     tauri::async_runtime::spawn(async move {
                         let manager = tauri::async_runtime::spawn_blocking(move || {
                             let manager = FileSearchManager::new_with_preferences(
@@ -1142,8 +1222,11 @@ pub fn run() {
                         .map_err(|error| format!("搜索模块初始化失败：{error}"));
                         search.publish_manager(manager);
                     });
+                } else {
+                    background_trace.mark("search-scheduled");
                 }
                 cleanup_stale_archive_caches(&archive_root, &archive_cache);
+                background_trace.mark("cache-maintenance-finished");
             });
             Ok(())
         })
@@ -1184,7 +1267,8 @@ pub fn run() {
             export_session_snapshot,
             set_session_encoding,
             close_log_session,
-            set_app_locale
+            set_app_locale,
+            mark_startup_stage
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

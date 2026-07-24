@@ -1374,7 +1374,7 @@ mod tests {
     impl FixtureDir {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "logpeek-watcher-test-{}-{}",
+                "logcrate-watcher-test-{}-{}",
                 std::process::id(),
                 DIR_SEQ.fetch_add(1, Ordering::Relaxed)
             ));
@@ -1578,7 +1578,7 @@ mod tests {
         let nested = fixture.path.join("nested");
         let child = nested.join("child");
         let outside = std::env::temp_dir().join(format!(
-            "logpeek-outside-{}-{}",
+            "logcrate-outside-{}-{}",
             std::process::id(),
             DIR_SEQ.fetch_add(1, Ordering::Relaxed)
         ));

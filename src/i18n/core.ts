@@ -2,8 +2,7 @@ import { en, type MessageDictionary, type MessageKey, zhCN } from './messages';
 
 export type Locale = 'zh-CN' | 'en';
 export type LocalePreference = 'system' | Locale;
-// Legacy key is intentionally retained for in-place LogPeek → LogCrate upgrades.
-export const LOCALE_STORAGE_KEY = 'logpeek.locale';
+export const LOCALE_STORAGE_KEY = 'logcrate.locale';
 const dictionaries: Record<Locale, MessageDictionary> = { en, 'zh-CN': zhCN };
 
 export function systemLocale(languages: readonly string[]): Locale {

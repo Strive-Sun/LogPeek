@@ -274,7 +274,7 @@ Artifacts are written to `src-tauri/target/release/bundle/`. Official releases a
 ## Repository layout
 
 ```text
-logpeek/
+logcrate/
 ├── src/                  # React + TypeScript frontend
 │   ├── api/              # Tauri / mock API adapters
 │   ├── components/       # Directory tree, tabs, log view, settings, and dialogs

@@ -24,7 +24,7 @@ test('persists valid preferences and falls back safely', () => {
   };
   saveLocalePreference(storage, 'zh-CN');
   assert.equal(loadLocalePreference(storage), 'zh-CN');
-  data.set('logpeek.locale', 'broken');
+  data.set('logcrate.locale', 'broken');
   assert.equal(loadLocalePreference(storage), 'system');
   assert.equal(
     loadLocalePreference({

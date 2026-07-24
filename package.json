@@ -1,5 +1,5 @@
 {
-  "name": "logpeek",
+  "name": "logcrate",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.{js,mjs}\" \"*.{json,js,ts,html}\" \".github/workflows/*.yml\"",
     "release:check": "node scripts/release-notes.mjs",
     "brand:check": "node scripts/brand-check.mjs",
+    "startup:bench": "node scripts/startup-benchmark.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

@@ -39,7 +39,7 @@ describe('更新设置', () => {
 
   it('忽略空白的跳过版本', () => {
     assert.equal(loadSkippedVersion(storage({})), null);
-    assert.equal(loadSkippedVersion(storage({ 'logpeek.update.skippedVersion': '  ' })), null);
+    assert.equal(loadSkippedVersion(storage({ 'logcrate.update.skippedVersion': '  ' })), null);
   });
 
   it('只抑制已跳过版本的自动提示', () => {

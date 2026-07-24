@@ -138,7 +138,7 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "logpeek-zip-test-{}-{}.zip",
+                "logcrate-zip-test-{}-{}.zip",
                 std::process::id(),
                 FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed)
             ));
@@ -169,7 +169,7 @@ mod tests {
 
         fn encrypted() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "logpeek-zip-test-{}-{}.zip",
+                "logcrate-zip-test-{}-{}.zip",
                 std::process::id(),
                 FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed)
             ));
@@ -200,7 +200,7 @@ mod tests {
 
         fn symlink() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "logpeek-zip-test-{}-{}.zip",
+                "logcrate-zip-test-{}-{}.zip",
                 std::process::id(),
                 FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed)
             ));

@@ -500,7 +500,7 @@ struct LogLine {
 ## 9. 目录结构(规划)
 
 ```
-logpeek/
+logcrate/
 ├── README.md
 ├── docs/
 │   └── technical-design.md

@@ -1,4 +1,4 @@
-const ONBOARDING_KEY = 'logpeek.macosFileAccessOnboarding';
+const ONBOARDING_KEY = 'logcrate.macosFileAccessOnboarding';
 
 export function shouldShowMacOsFileAccessOnboarding(
   storage: Pick<Storage, 'getItem'>,

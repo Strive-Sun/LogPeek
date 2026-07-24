@@ -41,7 +41,7 @@ if (tag?.startsWith('v') && tag.slice(1) !== version) {
 if (process.argv.includes('--github-output')) {
   const output = process.env.GITHUB_OUTPUT;
   if (!output) fail('缺少 GitHub Actions 的 GITHUB_OUTPUT 环境变量');
-  const delimiter = `LOGPEEK_RELEASE_NOTES_${Date.now()}`;
+  const delimiter = `LOGCRATE_RELEASE_NOTES_${Date.now()}`;
   const body = `${notes}\n\n---\n安装包见下方 Assets。`;
   appendFileSync(output, `body<<${delimiter}\n${body}\n${delimiter}\n`);
 } else {

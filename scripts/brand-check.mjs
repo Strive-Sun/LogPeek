@@ -78,9 +78,14 @@ const decodePng = (buffer, file) => {
 };
 
 const config = JSON.parse(await read('src-tauri/tauri.conf.json'));
+const cargoManifest = await read('src-tauri/Cargo.toml');
+const npmManifest = JSON.parse(await read('package.json'));
 assert(config.productName === 'LogCrate', 'Tauri productName must be LogCrate');
 assert(config.app.windows[0].title === 'LogCrate', 'Main window title must be LogCrate');
-assert(config.identifier === 'com.logpeek.app', 'Legacy bundle identifier must not change');
+assert(config.identifier === 'com.logcrate.app', 'Tauri bundle identifier must use LogCrate');
+assert(/^name = "logcrate"$/m.test(cargoManifest), 'Cargo package name must be logcrate');
+assert(/^name = "logcrate_lib"$/m.test(cargoManifest), 'Rust library name must be logcrate_lib');
+assert(npmManifest.name === 'logcrate', 'npm package name must be logcrate');
 assert(
   config.plugins.updater.endpoints.length === 1 &&
     config.plugins.updater.endpoints[0] === canonicalUpdaterEndpoint,
@@ -108,9 +113,9 @@ const [app, locale, update, readme, readmeZh] = await Promise.all([
   read('README.md'),
   read('README_ZH.md'),
 ]);
-assert(app.includes("'logpeek.treeWidth'"), 'Legacy tree width key must remain readable');
-assert(locale.includes("'logpeek.locale'"), 'Legacy locale key must remain readable');
-assert(update.includes("'logpeek.update.autoCheck'"), 'Legacy update setting must remain readable');
+assert(app.includes("'logcrate.treeWidth'"), 'Tree width key must use LogCrate');
+assert(locale.includes("'logcrate.locale'"), 'Locale key must use LogCrate');
+assert(update.includes("'logcrate.update.autoCheck'"), 'Update setting must use LogCrate');
 for (const [name, contents] of [
   ['README.md', readme],
   ['README_ZH.md', readmeZh],
@@ -122,10 +127,6 @@ for (const [name, contents] of [
   assert(
     contents.includes(canonicalRepository),
     `${name} must link to the canonical LogCrate repository`,
-  );
-  assert(
-    !contents.includes('https://github.com/Strive-Sun/LogPeek'),
-    `${name} must not link to the legacy repository`,
   );
 }
 
@@ -172,4 +173,4 @@ for (const screenshot of [
   assert(readme.includes(screenshot), `README must reference ${screenshot}`);
 }
 
-console.log('Brand compatibility check passed: LogCrate repository + legacy upgrade identity.');
+console.log('Brand check passed: LogCrate identity and repository are consistent.');

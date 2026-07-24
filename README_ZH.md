@@ -274,7 +274,7 @@ npm run tauri:build
 ## 项目结构
 
 ```text
-logpeek/
+logcrate/
 ├── src/                  # React + TypeScript 前端
 │   ├── api/              # Tauri / mock API 适配层
 │   ├── components/       # 目录树、选项卡、日志正文、设置等组件

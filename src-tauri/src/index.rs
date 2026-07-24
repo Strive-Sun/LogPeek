@@ -170,7 +170,7 @@ impl SessionManager {
             .unwrap()
             .clone()
             .unwrap_or_else(std::env::temp_dir);
-        dir.join(format!("logpeek-{session_id}.cache"))
+        dir.join(format!("logcrate-{session_id}.cache"))
     }
 
     fn detect_encoding(sample: &[u8]) -> &'static Encoding {
@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn close_and_lru_eviction_remove_cache_files() {
         let cache_dir = std::env::temp_dir().join(format!(
-            "logpeek-index-test-{}-{}",
+            "logcrate-index-test-{}-{}",
             std::process::id(),
             CACHE_TEST_SEQ.fetch_add(1, Ordering::Relaxed)
         ));

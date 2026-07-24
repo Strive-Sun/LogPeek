@@ -12,7 +12,7 @@ fn main() {
 
 #[cfg(windows)]
 mod service {
-    use logpeek_lib::ntfs::ipc::{
+    use logcrate_lib::ntfs::ipc::{
         enumerate_mft_via_service, query_usn_via_service, read_usn_via_service, run_pipe_server,
         wake_pipe_server, SERVICE_NAME,
     };

@@ -1,5 +1,5 @@
 [package]
-name = "logpeek"
+name = "logcrate"
 autobins = false
 default-run = "logcrate"
 # 应用版本的唯一人工维护来源；Tauri 配置省略 version 后会自动读取此值。
@@ -10,7 +10,7 @@ edition = "2021"
 rust-version = "1.70"
 
 [lib]
-name = "logpeek_lib"
+name = "logcrate_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
@@ -86,7 +86,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWo
 # Full-disk search is CPU-bound even in `tauri dev`. Optimize only the application
 # and Orange tokenization/index packages so development builds exercise realistic
 # indexing performance without turning every Tauri dependency into a release build.
-[profile.dev.package.logpeek]
+[profile.dev.package.logcrate]
 opt-level = 2
 
 [profile.dev.package.convert_case]
